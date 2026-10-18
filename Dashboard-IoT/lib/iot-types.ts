@@ -73,3 +73,21 @@ export const DATASTREAM_SUGGESTIONS = [
 ];
 
 export const AVAILABLE_VIRTUAL_PINS = Array.from({ length: 256 }, (_, i) => `V${i}`);
+
+export function getDefaultDatastreams(): Record<string, Datastream> {
+  return {
+    V0: { pin: "V0", name: "pembacaan pH", type: "Double", min: 0, max: 14, value: 7.0 },
+    V1: { pin: "V1", name: "pembacaan kelembapan", type: "Integer", min: 0, max: 100, value: 63 },
+    V2: { pin: "V2", name: "status pompa", type: "Integer", min: 0, max: 1, value: 1 },
+    V3: { pin: "V3", name: "suhu udara", type: "Double", min: 0, max: 100, value: 27.4 },
+    V4: { pin: "V4", name: "kecepatan kipas", type: "Integer", min: 0, max: 100, value: 40 },
+    V5: { pin: "V5", name: "intensitas cahaya", type: "Integer", min: 0, max: 1023, value: 412 },
+  };
+}
+
+export function genAuthToken() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const prefix = Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  const suffix = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return `${prefix}-${suffix}`;
+}

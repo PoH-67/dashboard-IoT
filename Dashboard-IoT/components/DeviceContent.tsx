@@ -6,62 +6,16 @@ import {
   ref, onValue, push, set, update, remove
 } from "firebase/database";
 import { auth, rtdb } from "@/lib/firebase";
-
-// ── Types ──────────────────────────────────────────────
-export type WidgetType = "switch" | "slider" | "label" | "table" | "image" | "chart" | "video";
-
-export interface Datastream {
-  pin: string; // e.g. "V0", "V1"
-  name: string;
-  type: "Integer" | "Double" | "String";
-  min: number;
-  max: number;
-  value: number | string;
-}
-
-export interface CanvasWidget {
-  id: string;
-  type: WidgetType;
-  title: string;
-  vpin: string; // Virtual Pin mapping e.g. "V1"
-  colSpan?: number; // 1 or 2 or 3
-  unit?: string;
-  min?: number;
-  max?: number;
-  value?: number | string;
-}
-
-export interface DeviceItem {
-  id: string;
-  name: string;
-  type: string;
-  authToken: string;
-  owner: string;
-  status: "online" | "offline";
-  lastSeen: number | null;
-  createdAt: number | null;
-  datastreams?: Record<string, Datastream>;
-  widgets?: CanvasWidget[];
-}
-
-// ── Default Datastreams Generator ──────────────────────
-function getDefaultDatastreams(): Record<string, Datastream> {
-  return {
-    V0: { pin: "V0", name: "pembacaan pH", type: "Double", min: 0, max: 14, value: 7.0 },
-    V1: { pin: "V1", name: "pembacaan kelembapan", type: "Integer", min: 0, max: 100, value: 63 },
-    V2: { pin: "V2", name: "status pompa", type: "Integer", min: 0, max: 1, value: 1 },
-    V3: { pin: "V3", name: "suhu udara", type: "Double", min: 0, max: 100, value: 27.4 },
-    V4: { pin: "V4", name: "kecepatan kipas", type: "Integer", min: 0, max: 100, value: 40 },
-    V5: { pin: "V5", name: "intensitas cahaya", type: "Integer", min: 0, max: 1023, value: 412 },
-  };
-}
-
-function genAuthToken() {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const prefix = Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  const suffix = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-  return `${prefix}-${suffix}`;
-}
+import {
+  WidgetType,
+  Datastream,
+  CanvasWidget,
+  DeviceItem,
+  getDefaultDatastreams,
+  genAuthToken,
+} from "@/lib/iot-types";
+import WidgetSettingsModal from "./WidgetSettingsModal";
+import NewDatastreamModal from "./NewDatastreamModal";
 
 export default function DeviceContent() {
   const [user, setUser] = useState<User | null>(null);
@@ -79,6 +33,10 @@ export default function DeviceContent() {
   // Canvas Widgets State (saat edit widget)
   const [canvasWidgets, setCanvasWidgets] = useState<CanvasWidget[]>([]);
   const [activeWidgetForModal, setActiveWidgetForModal] = useState<CanvasWidget | null>(null);
+  const [showNewDsModal, setShowNewDsModal] = useState(false);
+
+  // Drag and drop reorder state
+  const [draggedWidgetIdx, setDraggedWidgetIdx] = useState<number | null>(null);
 
   // Search filter
   const [searchQuery, setSearchQuery] = useState("");
@@ -89,6 +47,7 @@ export default function DeviceContent() {
     });
   }, []);
 
+  // Fetch devices in realtime from Firebase RTDB
   useEffect(() => {
     if (!user) return;
     const devRef = ref(rtdb, `users/${user.uid}/devices`);
@@ -116,13 +75,13 @@ export default function DeviceContent() {
           id,
           ...item,
           widgets: wList,
-          datastreams: item.datastreams || getDefaultDatastreams(),
+          datastreams: item.datastreams || {},
         };
       });
       setDevices(list);
       setLoading(false);
 
-      // Sinkronkan selected device jika sedang dibuka
+      // Keep selected device synced if editing
       if (selectedDevice) {
         const found = list.find((d) => d.id === selectedDevice.id);
         if (found) setSelectedDevice(found);
@@ -130,6 +89,7 @@ export default function DeviceContent() {
     });
   }, [user, selectedDevice?.id]);
 
+  // Create a brand new device with EMPTY template (no default widgets, clean start)
   const handleCreateDevice = async () => {
     if (!user || !newDevName.trim()) return;
     setCreating(true);
@@ -141,20 +101,12 @@ export default function DeviceContent() {
         name: newDevName.trim(),
         type: newDevType,
         authToken: token,
-        owner: `${user.email || "member@upnvj.ac.id"} (you)`,
+        owner: `${user.email || "user@example.com"} (you)`,
         status: "offline",
         lastSeen: null,
         createdAt: Date.now(),
         datastreams: getDefaultDatastreams(),
-        widgets: [
-          { id: "w_1", type: "switch", title: "Device power", vpin: "V2", colSpan: 1, value: 1 },
-          { id: "w_2", type: "slider", title: "Fan speed", vpin: "V4", min: 0, max: 100, colSpan: 1, value: 40 },
-          { id: "w_3", type: "label", title: "Temperature", vpin: "V3", unit: "°C", colSpan: 1, value: 27.4 },
-          { id: "w_4", type: "chart", title: "Temperature, last 24 hours", vpin: "V3", colSpan: 2 },
-          { id: "w_5", type: "image", title: "Device photo", vpin: "V0", colSpan: 1 },
-          { id: "w_6", type: "table", title: "Latest readings", vpin: "V1", colSpan: 2 },
-          { id: "w_7", type: "video", title: "Live video (optional)", vpin: "V0", colSpan: 1 }
-        ],
+        widgets: [], // Empty initially - user creates their own layout!
       });
       setShowAddModal(false);
       setNewDevName("");
@@ -192,67 +144,45 @@ export default function DeviceContent() {
         widgets: canvasWidgets,
       });
       setIsEditingWidgets(false);
-      alert("Perubahan widget berhasil disimpan!");
     } catch (err) {
       console.error(err);
       alert("Gagal menyimpan widget.");
     }
   };
 
-  // Drag and Drop Handlers
-  const handleDragStart = (e: DragEvent, type: WidgetType) => {
-    e.dataTransfer.setData("widgetType", type);
-  };
-
-  const handleDrop = (e: DragEvent) => {
-    e.preventDefault();
-    const type = e.dataTransfer.getData("widgetType") as WidgetType;
-    if (!type) return;
-    addWidgetToCanvas(type);
-  };
-
-  const handleDragOver = (e: DragEvent) => {
-    e.preventDefault();
-  };
-
+  // Add widget from Widget Box
   const addWidgetToCanvas = (type: WidgetType) => {
     const newId = `w_${Date.now()}`;
     let title = "New Widget";
-    let vpin = "V1";
     let colSpan = 1;
 
     switch (type) {
       case "switch":
         title = "Switch";
-        vpin = "V2";
         colSpan = 1;
         break;
       case "slider":
         title = "Slider";
-        vpin = "V4";
         colSpan = 1;
         break;
       case "label":
-        title = "Value Display";
-        vpin = "V3";
+        title = "Label";
         colSpan = 1;
         break;
       case "chart":
-        title = "Data Chart";
-        vpin = "V3";
+        title = "Data chart";
         colSpan = 2;
         break;
       case "table":
-        title = "Data Table";
-        vpin = "V1";
+        title = "Table";
         colSpan = 2;
         break;
       case "image":
-        title = "Image Widget";
+        title = "Image";
         colSpan = 1;
         break;
       case "video":
-        title = "Live Video";
+        title = "Live video";
         colSpan = 1;
         break;
     }
@@ -261,39 +191,95 @@ export default function DeviceContent() {
       id: newId,
       type,
       title,
-      vpin,
+      vpin: "", // Not connected yet!
       colSpan,
-      value: type === "switch" ? 0 : type === "slider" ? 50 : 25,
-      min: 0,
-      max: 100,
+      value: type === "switch" ? 0 : 0,
     };
 
     setCanvasWidgets((prev) => [...prev, newWidget]);
+    // Automatically open settings so the user can configure it!
+    setActiveWidgetForModal(newWidget);
   };
 
   const removeWidgetFromCanvas = (id: string) => {
     setCanvasWidgets((prev) => prev.filter((w) => w.id !== id));
   };
 
-  // Realtime Live Update Virtual Pin value
-  const updateDatastreamValue = async (pin: string, val: number | string) => {
-    if (!user || !selectedDevice) return;
+  // Drag from palette
+  const handlePaletteDragStart = (e: DragEvent, type: WidgetType) => {
+    e.dataTransfer.setData("widgetType", type);
+  };
+
+  // Drop onto canvas
+  const handleCanvasDrop = (e: DragEvent) => {
+    e.preventDefault();
+    const type = e.dataTransfer.getData("widgetType") as WidgetType;
+    if (type) {
+      addWidgetToCanvas(type);
+    }
+  };
+
+  // Drag reordering inside canvas
+  const handleItemDragStart = (e: DragEvent, index: number) => {
+    setDraggedWidgetIdx(index);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleItemDragOver = (e: DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedWidgetIdx === null || draggedWidgetIdx === index) return;
+    const items = [...canvasWidgets];
+    const draggedItem = items[draggedWidgetIdx];
+    items.splice(draggedWidgetIdx, 1);
+    items.splice(index, 0, draggedItem);
+    setDraggedWidgetIdx(index);
+    setCanvasWidgets(items);
+  };
+
+  const handleItemDragEnd = () => {
+    setDraggedWidgetIdx(null);
+  };
+
+  // Interactive control updates
+  const handleWidgetValueChange = async (vpin: string, val: number | string) => {
+    if (!user || !selectedDevice || !vpin) return;
     try {
-      await update(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${pin}`), {
+      await update(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${vpin}`), {
         value: val,
       });
-      // Update juga di state canvas
-      setCanvasWidgets((prev) =>
-        prev.map((w) => (w.vpin === pin ? { ...w, value: val } : w))
-      );
     } catch (err) {
       console.error(err);
     }
   };
 
+  // Saving new datastream from NewDatastreamModal
+  const handleSaveNewDatastream = async (newDs: Datastream) => {
+    if (!user || !selectedDevice) return;
+    try {
+      await update(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${newDs.pin}`), newDs);
+      
+      // Update local selectedDevice
+      const updatedDs = { ...(selectedDevice.datastreams || {}), [newDs.pin]: newDs };
+      setSelectedDevice({ ...selectedDevice, datastreams: updatedDs });
+
+      // If modal was open for a widget, assign this new pin
+      if (activeWidgetForModal) {
+        setActiveWidgetForModal({
+          ...activeWidgetForModal,
+          vpin: newDs.pin,
+          title: activeWidgetForModal.title || newDs.displayName || newDs.name,
+        });
+      }
+      setShowNewDsModal(false);
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menambahkan datastream.");
+    }
+  };
+
   const filteredDevices = devices.filter((d) =>
-    d.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    d.authToken.toLowerCase().includes(searchQuery.toLowerCase())
+    (d.name || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (d.authToken || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   if (loading) {
@@ -304,7 +290,7 @@ export default function DeviceContent() {
   // VIEW: EDIT WIDGETS CANVAS (Gambar 1 & 5)
   // ══════════════════════════════════════════════════════════
   if (isEditingWidgets && selectedDevice) {
-    const ds = selectedDevice.datastreams || getDefaultDatastreams();
+    const ds = selectedDevice.datastreams || {};
 
     return (
       <div className="blynk-device-editor-page">
@@ -312,7 +298,7 @@ export default function DeviceContent() {
         <div className="editor-top-header">
           <div>
             <h1 className="editor-main-title">Device</h1>
-            <p className="editor-sub-title">Guidances you might need!</p>
+            <p className="editor-sub-title">Customize your widgets.</p>
           </div>
         </div>
 
@@ -338,9 +324,9 @@ export default function DeviceContent() {
           </div>
         </div>
 
-        {/* Main Work Area: Sidebar + Canvas */}
+        {/* Workspace: Sidebar + Canvas */}
         <div className="editor-workspace-layout">
-          {/* ── Left Sidebar: Widget Box ── */}
+          {/* ── Left Sidebar: Widget Box (Gambar 1) ── */}
           <div className="widget-box-sidebar">
             <div className="widget-box-header">
               <h3 className="widget-box-title">Widget Box</h3>
@@ -348,28 +334,26 @@ export default function DeviceContent() {
             </div>
 
             <div className="widget-box-categories">
-              {/* Category: Controls */}
+              {/* Controls */}
               <div className="widget-category-group">
                 <span className="category-group-label">Controls</span>
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "switch")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "switch")}
                   onClick={() => addWidgetToCanvas("switch")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Switch</span>
-                  <div className="mock-switch-pill">
-                    <span className="mock-switch-circle" />
-                  </div>
+                  <div className="mock-switch-pill"><span className="mock-switch-circle" /></div>
                 </div>
 
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "slider")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "slider")}
                   onClick={() => addWidgetToCanvas("slider")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Slider</span>
                   <div className="mock-slider-track">
@@ -379,30 +363,30 @@ export default function DeviceContent() {
                 </div>
               </div>
 
-              {/* Category: Tiles */}
+              {/* Tiles */}
               <div className="widget-category-group">
                 <span className="category-group-label">Tiles</span>
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "label")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "label")}
                   onClick={() => addWidgetToCanvas("label")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Label</span>
                   <span className="mock-tile-val">111</span>
                 </div>
               </div>
 
-              {/* Category: Data */}
+              {/* Data */}
               <div className="widget-category-group">
                 <span className="category-group-label">Data</span>
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "table")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "table")}
                   onClick={() => addWidgetToCanvas("table")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Table</span>
                   <span className="mock-item-sub">Time • Sensor • Value</span>
@@ -411,9 +395,9 @@ export default function DeviceContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "image")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "image")}
                   onClick={() => addWidgetToCanvas("image")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Image</span>
                   <span className="mock-item-sub">Photo or diagram</span>
@@ -422,24 +406,24 @@ export default function DeviceContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "chart")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "chart")}
                   onClick={() => addWidgetToCanvas("chart")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Data chart</span>
                   <span className="mock-item-sub">Realtime line chart</span>
                 </div>
               </div>
 
-              {/* Category: Media */}
+              {/* Media */}
               <div className="widget-category-group">
                 <span className="category-group-label">Media</span>
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "video")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "video")}
                   onClick={() => addWidgetToCanvas("video")}
-                  title="Click or Drag to Canvas"
+                  title="Drag or click to add"
                 >
                   <span className="card-item-title">Live video</span>
                   <span className="mock-item-sub">Device camera</span>
@@ -448,47 +432,58 @@ export default function DeviceContent() {
             </div>
           </div>
 
-          {/* ── Right Canvas: Grid Area ── */}
+          {/* ── Right Canvas: Grid Area (Gambar 2 & 5) ── */}
           <div
-            className="widget-canvas-dropzone"
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
+            className="widget-canvas-dropzone editing-mode"
+            onDrop={handleCanvasDrop}
+            onDragOver={(e) => e.preventDefault()}
           >
             {canvasWidgets.length === 0 ? (
-              // Empty Canvas (Gambar 5)
               <div className="canvas-empty-state">
-                <div className="canvas-grid-lines-bg" />
                 <div className="canvas-empty-content">
                   <h3 className="empty-title">Add new widget</h3>
                   <p className="empty-sub">Drag a widget from the Widget Box to the canvas</p>
                 </div>
               </div>
             ) : (
-              // Active Widgets Canvas (Gambar 1)
               <div className="canvas-widgets-grid">
-                {canvasWidgets.map((w) => {
-                  const datastream = ds[w.vpin];
-                  const currentVal = datastream ? datastream.value : w.value;
+                {canvasWidgets.map((w, index) => {
+                  const currentDs = w.vpin ? ds[w.vpin] : null;
+                  const currentVal = currentDs?.value !== undefined ? currentDs.value : w.value;
+                  const isConfigured = Boolean(w.vpin && currentDs);
 
                   return (
                     <div
                       key={w.id}
-                      className={`canvas-widget-card col-span-${w.colSpan || 1}`}
+                      draggable
+                      onDragStart={(e) => handleItemDragStart(e, index)}
+                      onDragOver={(e) => handleItemDragOver(e, index)}
+                      onDragEnd={handleItemDragEnd}
+                      className={`canvas-widget-card col-span-${w.colSpan || 1} ${draggedWidgetIdx === index ? "is-dragging" : ""}`}
                     >
-                      {/* Widget Controls Bar */}
+                      {/* Card Header */}
                       <div className="card-header-bar">
-                        <span className="card-widget-title">{w.title}</span>
+                        <div>
+                          <span className="card-widget-title">{w.title}</span>
+                          {isConfigured ? (
+                            <span className="card-dev-tag">[{w.vpin}]</span>
+                          ) : (
+                            <span className="card-dev-tag not-configured" style={{ color: "#ef4444" }}>
+                              (Unassigned)
+                            </span>
+                          )}
+                        </div>
                         <div className="card-actions-right">
                           <button
                             className="btn-card-gear"
-                            title="Edit Virtual Pin / Datastream"
+                            title="Configure Datastream / Title"
                             onClick={() => setActiveWidgetForModal(w)}
                           >
                             ⚙️
                           </button>
                           <button
                             className="btn-card-trash"
-                            title="Delete Widget"
+                            title="Delete"
                             onClick={() => removeWidgetFromCanvas(w.id)}
                           >
                             ✕
@@ -496,7 +491,7 @@ export default function DeviceContent() {
                         </div>
                       </div>
 
-                      {/* Widget Body Rendering */}
+                      {/* Card Body */}
                       <div className="card-widget-content">
                         {/* SWITCH */}
                         {w.type === "switch" && (
@@ -505,7 +500,7 @@ export default function DeviceContent() {
                               className={`blynk-toggle-pill ${Number(currentVal) === 1 ? "active" : ""}`}
                               onClick={() => {
                                 const next = Number(currentVal) === 1 ? 0 : 1;
-                                updateDatastreamValue(w.vpin, next);
+                                handleWidgetValueChange(w.vpin!, next);
                               }}
                             >
                               <span className="toggle-pill-thumb" />
@@ -521,38 +516,38 @@ export default function DeviceContent() {
                           <div className="render-slider-row">
                             <input
                               type="range"
-                              min={w.min ?? 0}
-                              max={w.max ?? 100}
+                              min={currentDs?.min ?? w.min ?? 0}
+                              max={currentDs?.max ?? w.max ?? 100}
                               value={Number(currentVal) || 0}
                               className="blynk-slider-element"
-                              onChange={(e) => updateDatastreamValue(w.vpin, Number(e.target.value))}
+                              onChange={(e) => handleWidgetValueChange(w.vpin!, Number(e.target.value))}
                             />
-                            <span className="slider-value-display">{currentVal}</span>
+                            <span className="slider-value-display">{currentVal ?? 0}</span>
                           </div>
                         )}
 
-                        {/* LABEL / TILE */}
+                        {/* LABEL */}
                         {w.type === "label" && (
                           <div className="render-label-row">
                             <span className="label-large-text">
-                              {currentVal}{w.unit || "°C"}
+                              {currentVal ?? "--"} {currentDs?.unit || w.unit || ""}
                             </span>
                           </div>
                         )}
 
-                        {/* DATA CHART */}
+                        {/* CHART */}
                         {w.type === "chart" && (
                           <div className="render-chart-block">
                             <svg className="blynk-chart-svg" viewBox="0 0 500 120" preserveAspectRatio="none">
                               <defs>
-                                <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                                <linearGradient id={`devGrad_${w.id}`} x1="0" y1="0" x2="0" y2="1">
                                   <stop offset="0%" stopColor="#0070f3" stopOpacity="0.25" />
                                   <stop offset="100%" stopColor="#0070f3" stopOpacity="0.0" />
                                 </linearGradient>
                               </defs>
                               <path
                                 d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45 L500,120 L0,120 Z"
-                                fill="url(#chartGrad)"
+                                fill={`url(#devGrad_${w.id})`}
                               />
                               <path
                                 d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45"
@@ -572,7 +567,7 @@ export default function DeviceContent() {
                               <span className="dot-pin p-tr" />
                               <span className="dot-pin p-bl" />
                               <span className="dot-pin p-br" />
-                              <div className="esp-chip-core">ESP32</div>
+                              <div className="esp-chip-core">{selectedDevice.type || "ESP32"}</div>
                             </div>
                           </div>
                         )}
@@ -592,41 +587,31 @@ export default function DeviceContent() {
                                 <tr>
                                   <td>12:41:08</td>
                                   <td>Temperature</td>
-                                  <td>{ds.V3?.value ?? 27.4}</td>
+                                  <td>{ds.V3?.value ?? "27.4"}</td>
                                 </tr>
                                 <tr>
                                   <td>12:41:06</td>
                                   <td>Humidity</td>
-                                  <td>{ds.V1?.value ?? 63.1}</td>
+                                  <td>{ds.V1?.value ?? "63.1"}</td>
                                 </tr>
                                 <tr>
                                   <td>12:41:04</td>
                                   <td>Light</td>
-                                  <td>{ds.V5?.value ?? 412.0}</td>
-                                </tr>
-                                <tr>
-                                  <td>12:41:02</td>
-                                  <td>Temperature</td>
-                                  <td>{ds.V3?.value ?? 27.3}</td>
-                                </tr>
-                                <tr>
-                                  <td>12:41:00</td>
-                                  <td>Humidity</td>
-                                  <td>{ds.V1?.value ?? 63.0}</td>
+                                  <td>{ds.V5?.value ?? "412.0"}</td>
                                 </tr>
                               </tbody>
                             </table>
                           </div>
                         )}
 
-                        {/* LIVE VIDEO */}
+                        {/* VIDEO */}
                         {w.type === "video" && (
                           <div className="render-video-block">
                             <div className="video-camera-screen">
                               <div className="camera-live-badge">LIVE</div>
                               <div className="camera-glitch-box b1" />
                               <div className="camera-glitch-box b2" />
-                              <div className="camera-footer-info">CAM-01 12:41:08</div>
+                              <div className="camera-footer-info">CAM-01 LIVE</div>
                             </div>
                           </div>
                         )}
@@ -639,18 +624,31 @@ export default function DeviceContent() {
           </div>
         </div>
 
-        {/* ── MODAL: EDIT VIRTUAL PIN & DATASTREAM (Gambar 4) ── */}
+        {/* ── MODAL: WIDGET SETTINGS (Gambar 3) ── */}
         {activeWidgetForModal && (
-          <DatastreamModal
+          <WidgetSettingsModal
             widget={activeWidgetForModal}
             device={selectedDevice}
             onClose={() => setActiveWidgetForModal(null)}
-            onSave={(updatedWidget) => {
+            onSave={(updated) => {
               setCanvasWidgets((prev) =>
-                prev.map((w) => (w.id === updatedWidget.id ? updatedWidget : w))
+                prev.map((w) => (w.id === updated.id ? updated : w))
               );
               setActiveWidgetForModal(null);
             }}
+            onCreateDatastream={() => {
+              setShowNewDsModal(true);
+            }}
+          />
+        )}
+
+        {/* ── MODAL: NEW DATASTREAM (Gambar 4 & 5) ── */}
+        {showNewDsModal && (
+          <NewDatastreamModal
+            existingPins={Object.keys(ds)}
+            initialPin="V0"
+            onClose={() => setShowNewDsModal(false)}
+            onSave={handleSaveNewDatastream}
           />
         )}
       </div>
@@ -784,182 +782,6 @@ export default function DeviceContent() {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════
-// MODAL: VIRTUAL PIN & DATASTREAM (Gambar 4)
-// ══════════════════════════════════════════════════════════
-function DatastreamModal({
-  widget,
-  device,
-  onClose,
-  onSave,
-}: {
-  widget: CanvasWidget;
-  device: DeviceItem;
-  onClose: () => void;
-  onSave: (updated: CanvasWidget) => void;
-}) {
-  const [activeTab, setActiveTab] = useState<"data" | "design">("data");
-  const [selectedVpin, setSelectedVpin] = useState(widget.vpin || "V1");
-  const [widgetTitle, setWidgetTitle] = useState(widget.title);
-  const [colSpan, setColSpan] = useState(widget.colSpan || 1);
-
-  // Datastreams
-  const ds = device.datastreams || getDefaultDatastreams();
-  const assignedDs = ds[selectedVpin] || {
-    pin: selectedVpin,
-    name: "Datastream",
-    type: "Integer",
-    min: 0,
-    max: 100,
-    value: 0,
-  };
-
-  const handleSave = () => {
-    onSave({
-      ...widget,
-      title: widgetTitle,
-      vpin: selectedVpin,
-      colSpan,
-    });
-  };
-
-  return (
-    <div className="modal-backdrop-blur" onClick={onClose}>
-      <div className="datastream-modal-card" onClick={(e) => e.stopPropagation()}>
-        {/* Title */}
-        <div className="ds-modal-top">
-          <h2 className="ds-modal-title">{widget.title || widget.type.toUpperCase()}</h2>
-        </div>
-
-        {/* Tabs: Data / Design */}
-        <div className="ds-tabs-row">
-          <button
-            className={`ds-tab-btn ${activeTab === "data" ? "active" : ""}`}
-            onClick={() => setActiveTab("data")}
-          >
-            Data
-          </button>
-          <button
-            className={`ds-tab-btn ${activeTab === "design" ? "active" : ""}`}
-            onClick={() => setActiveTab("design")}
-          >
-            Design
-          </button>
-        </div>
-
-        {/* Tab Content */}
-        {activeTab === "data" ? (
-          <div className="ds-tab-body">
-            <div className="ds-field-section">
-              <span className="ds-section-heading">DATASTREAM</span>
-              <p className="ds-section-sub">Min/Max values of datastreams will be used as On/Off values.</p>
-
-              {/* Status Assigned */}
-              <div className="ds-assigned-badge-row">
-                <span className="ds-check-icon">✔</span>
-                <span className="ds-assigned-text">
-                  <strong>1 Datastream</strong> assigned to the widget:
-                </span>
-                <span className="ds-pill-tag">
-                  🎵 {assignedDs.pin} {assignedDs.name} &nbsp; {assignedDs.type} [{assignedDs.min}-{assignedDs.max}]
-                </span>
-              </div>
-
-              {/* Virtual Pin Selector */}
-              <label className="ds-input-label">VIRTUAL PIN</label>
-              <div className="ds-vpin-select-box">
-                <select
-                  value={selectedVpin}
-                  onChange={(e) => setSelectedVpin(e.target.value)}
-                  className="ds-vpin-dropdown"
-                >
-                  {Object.entries(ds).map(([pin, item]) => (
-                    <option key={pin} value={pin}>
-                      {pin} — {item.name} ({item.type} [{item.min}-{item.max}])
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn-ds-trash"
-                  title="Reset Pin"
-                  onClick={() => setSelectedVpin("V0")}
-                >
-                  🗑
-                </button>
-              </div>
-            </div>
-
-            {/* Devices Section */}
-            <div className="ds-field-section" style={{ marginTop: 20 }}>
-              <span className="ds-section-heading">DEVICES</span>
-              <p className="ds-section-sub">Select devices that will be assigned to the widget.</p>
-
-              <div className="ds-devices-table-wrap">
-                <table className="ds-mini-table">
-                  <thead>
-                    <tr>
-                      <th>Device Name</th>
-                      <th>Organization</th>
-                      <th>Device owner</th>
-                      <th>Device Id</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="active-row">
-                      <td>
-                        <span className="active-dot-icon">🎵</span> {device.name}
-                      </td>
-                      <td>My organization - KSM IoT</td>
-                      <td>{device.owner || "Owner"}</td>
-                      <td>{device.id.slice(0, 8)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Tab Design */
-          <div className="ds-tab-body">
-            <div className="ds-field-section">
-              <label className="ds-input-label">Widget Title</label>
-              <input
-                type="text"
-                className="ds-text-input"
-                value={widgetTitle}
-                onChange={(e) => setWidgetTitle(e.target.value)}
-              />
-            </div>
-
-            <div className="ds-field-section" style={{ marginTop: 14 }}>
-              <label className="ds-input-label">Grid Width (Columns)</label>
-              <select
-                value={colSpan}
-                onChange={(e) => setColSpan(Number(e.target.value))}
-                className="ds-text-input"
-              >
-                <option value={1}>1 Column (Standard)</option>
-                <option value={2}>2 Columns (Wide)</option>
-                <option value={3}>3 Columns (Full Width)</option>
-              </select>
-            </div>
-          </div>
-        )}
-
-        {/* Modal Footer */}
-        <div className="ds-modal-footer">
-          <button className="ds-btn-cancel" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="ds-btn-save-lime" onClick={handleSave}>
-            Save
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

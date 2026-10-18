@@ -1051,3 +1051,440 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 .shell-avatar-img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+
+/* ═══ BLYNK MODALS & DRAG-AND-DROP REORDER ═══ */
+
+/* Modal Container & Base */
+.blynk-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+/* Widget Settings Modal (2-Column) */
+.blynk-widget-settings-modal {
+  background: #ffffff;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 840px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.blynk-ws-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 28px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.blynk-ws-header h2 {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+.blynk-ws-body {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  min-height: 380px;
+}
+.blynk-ws-left {
+  padding: 24px 28px;
+  border-right: 1px solid #e5e7eb;
+  overflow-y: auto;
+}
+.blynk-ws-right {
+  background: #f8fafc;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.blynk-preview-container {
+  width: 100%;
+  max-width: 260px;
+}
+.blynk-preview-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.05);
+}
+.blynk-preview-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 12px;
+}
+.preview-switch-center, .preview-label-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 60px;
+}
+
+.blynk-ds-select-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.blynk-ds-select {
+  flex: 1;
+  height: 40px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 0 12px;
+  font-size: 13px;
+  background: #fff;
+  color: #111827;
+}
+.blynk-ds-or {
+  font-size: 12px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+.btn-create-datastream {
+  padding: 0 16px;
+  height: 40px;
+  background: #c6ff00;
+  color: #000;
+  border: 0;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity .15s;
+}
+.btn-create-datastream:hover {
+  opacity: 0.9;
+}
+
+.blynk-ws-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 28px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+/* ── New Datastream Modal ── */
+.blynk-ds-modal-container {
+  background: #fff;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 860px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.blynk-ds-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 28px;
+  border-bottom: 1px solid #e5e7eb;
+}
+.blynk-ds-modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+.blynk-ds-modal-close {
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  color: #9ca3af;
+  cursor: pointer;
+}
+
+.blynk-ds-modal-layout {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  min-height: 440px;
+  overflow: hidden;
+}
+.blynk-ds-sidebar {
+  border-right: 1px solid #e5e7eb;
+  padding: 16px 12px;
+  background: #fbfcfd;
+}
+.blynk-ds-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.blynk-ds-nav-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #4b5563;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: all .12s;
+}
+.blynk-ds-nav-btn:hover:not(.disabled) {
+  background: #f3f4f6;
+  color: #111827;
+}
+.blynk-ds-nav-btn.active {
+  background: #111827;
+  color: #fff;
+  font-weight: 600;
+}
+.blynk-ds-nav-btn.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.blynk-ds-content {
+  padding: 24px 28px;
+  overflow-y: auto;
+}
+.blynk-pane-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px;
+}
+.blynk-pane-sub {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 0 0 16px;
+}
+
+.blynk-form-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.blynk-form-row.blynk-name-row {
+  align-items: center;
+}
+.blynk-input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.blynk-input-field.flex-1 { flex: 1; }
+.blynk-input-field.flex-2 { flex: 2; }
+.blynk-input-field.relative-pos { position: relative; }
+.blynk-input-field label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6b7280;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.blynk-input-field input, .blynk-input-field select {
+  height: 40px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: #111827;
+  outline: none;
+  background: #fff;
+  transition: border-color .15s;
+}
+.blynk-input-field input:focus, .blynk-input-field select:focus {
+  border-color: #84cc16;
+}
+.blynk-char-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.blynk-char-input-wrap input {
+  width: 100%;
+  padding-right: 55px;
+}
+.blynk-char-count {
+  position: absolute;
+  right: 10px;
+  font-size: 10px;
+  color: #9ca3af;
+  pointer-events: none;
+}
+.blynk-field-hint {
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.blynk-btn-arrow {
+  margin-top: 10px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f9fafb;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: #4b5563;
+  flex-shrink: 0;
+}
+.blynk-btn-arrow:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.blynk-autocomplete-dropdown {
+  position: absolute;
+  top: 68px;
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0,0,0,.1);
+  z-index: 100;
+}
+.blynk-autocomplete-item {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #1f2937;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.blynk-autocomplete-item:hover {
+  background: #f0f7ff;
+  color: #0070f3;
+}
+.blynk-autocomplete-item.close-btn {
+  border-top: 1px solid #f3f4f6;
+  color: #6b7280;
+  justify-content: center;
+  font-weight: 600;
+}
+.blynk-suggest-unit {
+  font-size: 10px;
+  color: #9ca3af;
+  background: #f3f4f6;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.blynk-color-picker-box {
+  position: relative;
+  height: 40px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+}
+.blynk-native-color-picker {
+  opacity: 0;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+.blynk-color-preview {
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  display: block;
+}
+
+.blynk-icon-box select {
+  width: 100%;
+}
+
+.blynk-segmented-btn-group {
+  display: flex;
+  background: #f3f4f6;
+  padding: 3px;
+  border-radius: 8px;
+  gap: 2px;
+}
+.blynk-segmented-btn {
+  flex: 1;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b7280;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.blynk-segmented-btn.active {
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+
+.blynk-info-notice {
+  background: #fafafa;
+  border-left: 3px solid #111827;
+  padding: 12px 14px;
+  border-radius: 4px;
+}
+.blynk-info-notice strong {
+  display: block;
+  font-size: 12px;
+  color: #111827;
+  margin-bottom: 2px;
+}
+.blynk-info-notice p {
+  margin: 0;
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.blynk-scaling-box {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.blynk-ds-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 28px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+/* Drag & Drop Reordering Highlight */
+.canvas-widget-card.is-dragging {
+  opacity: 0.4;
+  border: 2px dashed #0070f3;
+  transform: scale(0.98);
+}

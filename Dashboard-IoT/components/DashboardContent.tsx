@@ -4,17 +4,15 @@ import { useEffect, useState, DragEvent } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import { ref, onValue, push, set, update, remove } from "firebase/database";
 import { auth, rtdb } from "@/lib/firebase";
-import { CanvasWidget, Datastream, DeviceItem, WidgetType } from "./DeviceContent";
+import { CanvasWidget, Datastream, DeviceItem, WidgetType } from "@/lib/iot-types";
+import WidgetSettingsModal from "./WidgetSettingsModal";
+import NewDatastreamModal from "./NewDatastreamModal";
 
 interface DashboardItem {
   id: string;
   name: string;
   createdAt: number;
-  widgets: DashboardWidget[];
-}
-
-interface DashboardWidget extends CanvasWidget {
-  deviceId?: string; // target device id
+  widgets: CanvasWidget[];
 }
 
 export default function DashboardContent() {
@@ -24,11 +22,18 @@ export default function DashboardContent() {
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Modal / Editor States
+  // Edit Mode Toggle
   const [isEditing, setIsEditing] = useState(false);
   const [showNewDashModal, setShowNewDashModal] = useState(false);
   const [newDashName, setNewDashName] = useState("");
-  const [activeWidgetModal, setActiveWidgetModal] = useState<DashboardWidget | null>(null);
+
+  // Modals
+  const [activeWidgetModal, setActiveWidgetModal] = useState<CanvasWidget | null>(null);
+  const [showNewDsModal, setShowNewDsModal] = useState(false);
+  const [targetDeviceForDs, setTargetDeviceForDs] = useState<string>("");
+
+  // Drag-and-drop reorder
+  const [draggedWidgetIdx, setDraggedWidgetIdx] = useState<number | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -36,13 +41,11 @@ export default function DashboardContent() {
     });
   }, []);
 
-  // Fetch Devices & Dashboards realtime
+  // Fetch devices
   useEffect(() => {
     if (!user) return;
-
-    // 1. Fetch Devices (untuk dipanggil di widget & virtual pin)
     const devRef = ref(rtdb, `users/${user.uid}/devices`);
-    const unsubDev = onValue(devRef, (snapshot) => {
+    return onValue(devRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) {
         setDevices([]);
@@ -54,38 +57,34 @@ export default function DashboardContent() {
       }));
       setDevices(list);
     });
+  }, [user]);
 
-    // 2. Fetch Dashboards
+  // Fetch dashboards
+  useEffect(() => {
+    if (!user) return;
     const dashRef = ref(rtdb, `users/${user.uid}/dashboards`);
-    const unsubDash = onValue(dashRef, (snapshot) => {
+    return onValue(dashRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) {
-        // Buat default dashboard jika belum ada
+        // Create initial default dashboard
         const newRef = push(dashRef);
-        const defaultDash: Omit<DashboardItem, "id"> = {
+        set(newRef, {
           name: "Main Dashboard",
           createdAt: Date.now(),
-          widgets: [
-            { id: "w_d1", type: "switch", title: "Main Power", vpin: "V2", colSpan: 1, value: 1 },
-            { id: "w_d2", type: "slider", title: "Fan Speed", vpin: "V4", colSpan: 1, value: 40, min: 0, max: 100 },
-            { id: "w_d3", type: "label", title: "Temperature", vpin: "V3", colSpan: 1, value: 27.4, unit: "°C" },
-            { id: "w_d4", type: "chart", title: "Realtime Telemetry", vpin: "V3", colSpan: 2 },
-            { id: "w_d5", type: "table", title: "Latest Readings", vpin: "V1", colSpan: 2 },
-          ],
-        };
-        set(newRef, defaultDash);
+          widgets: [],
+        });
         return;
       }
 
       const list: DashboardItem[] = Object.entries(data).map(([id, val]) => {
         const item = val as Omit<DashboardItem, "id">;
-        let wList: DashboardWidget[] = [];
+        let wList: CanvasWidget[] = [];
         if (item.widgets) {
           if (Array.isArray(item.widgets)) {
             wList = item.widgets;
           } else {
             wList = Object.entries(item.widgets).map(([wid, w]) => ({
-              ...(w as DashboardWidget),
+              ...(w as CanvasWidget),
               id: wid,
             }));
           }
@@ -103,15 +102,11 @@ export default function DashboardContent() {
       }
       setLoading(false);
     });
-
-    return () => {
-      unsubDev();
-      unsubDash();
-    };
   }, [user, activeDashId]);
 
   const activeDashboard = dashboards.find((d) => d.id === activeDashId) || dashboards[0];
 
+  // Dashboard Management
   const handleCreateDashboard = async () => {
     if (!user || !newDashName.trim()) return;
     try {
@@ -145,80 +140,152 @@ export default function DashboardContent() {
     }
   };
 
-  // Drag and Drop Widget Handlers
-  const handleDragStart = (e: DragEvent, type: WidgetType) => {
-    e.dataTransfer.setData("widgetType", type);
-  };
-
-  const handleDrop = (e: DragEvent) => {
-    e.preventDefault();
-    const type = e.dataTransfer.getData("widgetType") as WidgetType;
-    if (!type || !activeDashboard) return;
-    addWidgetToActiveDashboard(type);
-  };
-
-  const handleDragOver = (e: DragEvent) => {
-    e.preventDefault();
-  };
-
+  // Add Widget
   const addWidgetToActiveDashboard = async (type: WidgetType) => {
     if (!user || !activeDashboard) return;
 
-    const newWidget: DashboardWidget = {
+    let title = "New Widget";
+    let colSpan = 1;
+
+    switch (type) {
+      case "switch":
+        title = "Switch";
+        colSpan = 1;
+        break;
+      case "slider":
+        title = "Slider";
+        colSpan = 1;
+        break;
+      case "label":
+        title = "Label";
+        colSpan = 1;
+        break;
+      case "chart":
+        title = "Data chart";
+        colSpan = 2;
+        break;
+      case "table":
+        title = "Table";
+        colSpan = 2;
+        break;
+      case "image":
+        title = "Image";
+        colSpan = 1;
+        break;
+      case "video":
+        title = "Live video";
+        colSpan = 1;
+        break;
+    }
+
+    const newWidget: CanvasWidget = {
       id: `w_dash_${Date.now()}`,
       type,
-      title: type === "switch" ? "Control Switch" : type === "slider" ? "Slider Control" : type === "label" ? "Sensor Metric" : "Data Display",
-      vpin: "V1",
-      colSpan: type === "chart" || type === "table" ? 2 : 1,
-      value: type === "switch" ? 0 : type === "slider" ? 50 : 27,
+      title,
+      deviceId: devices[0]?.id || "",
+      vpin: "", // Unassigned by default
+      colSpan,
+      value: type === "switch" ? 0 : 0,
       min: 0,
       max: 100,
-      deviceId: devices[0]?.id || "",
     };
 
-    const updatedWidgets = [...(activeDashboard.widgets || []), newWidget];
+    const currentWidgets = activeDashboard.widgets || [];
+    const updatedWidgets = [...currentWidgets, newWidget];
     await update(ref(rtdb, `users/${user.uid}/dashboards/${activeDashboard.id}`), {
       widgets: updatedWidgets,
     });
+
+    // Auto open settings for the new widget
+    setActiveWidgetModal(newWidget);
   };
 
   const removeWidgetFromDashboard = async (widgetId: string) => {
     if (!user || !activeDashboard) return;
-    const updated = activeDashboard.widgets.filter((w) => w.id !== widgetId);
+    const updated = (activeDashboard.widgets || []).filter((w) => w.id !== widgetId);
     await update(ref(rtdb, `users/${user.uid}/dashboards/${activeDashboard.id}`), {
       widgets: updated,
     });
   };
 
-  // Interaksi kontrol: update Virtual Pin di device target
-  const handleInteract = async (widget: DashboardWidget, nextVal: number | string) => {
-    if (!user) return;
-    const targetDevId = widget.deviceId || devices[0]?.id;
-    if (!targetDevId) return;
+  // Drag and Drop from Palette
+  const handlePaletteDragStart = (e: DragEvent, type: WidgetType) => {
+    e.dataTransfer.setData("widgetType", type);
+  };
 
+  const handleCanvasDrop = (e: DragEvent) => {
+    e.preventDefault();
+    const type = e.dataTransfer.getData("widgetType") as WidgetType;
+    if (type) {
+      addWidgetToActiveDashboard(type);
+    }
+  };
+
+  // Reorder in Dashboard Canvas
+  const handleItemDragStart = (e: DragEvent, index: number) => {
+    if (!isEditing) return;
+    setDraggedWidgetIdx(index);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleItemDragOver = (e: DragEvent, index: number) => {
+    if (!isEditing) return;
+    e.preventDefault();
+    if (draggedWidgetIdx === null || draggedWidgetIdx === index || !activeDashboard) return;
+    const items = [...(activeDashboard.widgets || [])];
+    const draggedItem = items[draggedWidgetIdx];
+    items.splice(draggedWidgetIdx, 1);
+    items.splice(index, 0, draggedItem);
+    setDraggedWidgetIdx(index);
+    
+    // Optimistic update
+    setDashboards((prev) =>
+      prev.map((d) => (d.id === activeDashboard.id ? { ...d, widgets: items } : d))
+    );
+  };
+
+  const handleItemDragEnd = async () => {
+    if (!isEditing || !activeDashboard || !user) return;
+    setDraggedWidgetIdx(null);
+    await update(ref(rtdb, `users/${user.uid}/dashboards/${activeDashboard.id}`), {
+      widgets: activeDashboard.widgets || [],
+    });
+  };
+
+  // Interactive control: updates the target device's virtual pin value in RTDB
+  const handleInteract = async (widget: CanvasWidget, nextVal: number | string) => {
+    if (!user || !widget.deviceId || !widget.vpin) return;
     try {
-      // 1. Update ke Datastream Device di RTDB
-      await update(ref(rtdb, `users/${user.uid}/devices/${targetDevId}/datastreams/${widget.vpin}`), {
+      await update(ref(rtdb, `users/${user.uid}/devices/${widget.deviceId}/datastreams/${widget.vpin}`), {
         value: nextVal,
       });
-
-      // 2. Update nilai di widget dashboard
-      if (activeDashboard) {
-        const updated = activeDashboard.widgets.map((w) =>
-          w.id === widget.id ? { ...w, value: nextVal } : w
-        );
-        await update(ref(rtdb, `users/${user.uid}/dashboards/${activeDashboard.id}`), {
-          widgets: updated,
-        });
-      }
     } catch (err) {
       console.error(err);
     }
   };
 
-  if (loading) {
-    return <div className="page-loading">Loading dashboards…</div>;
-  }
+  // Create new datastream from modal
+  const handleSaveNewDatastream = async (newDs: Datastream) => {
+    if (!user || !targetDeviceForDs) return;
+    try {
+      await update(ref(rtdb, `users/${user.uid}/devices/${targetDeviceForDs}/datastreams/${newDs.pin}`), newDs);
+      setShowNewDsModal(false);
+      // Automatically assign to the active widget modal if open
+      if (activeWidgetModal) {
+        setActiveWidgetModal({
+          ...activeWidgetModal,
+          deviceId: targetDeviceForDs,
+          vpin: newDs.pin,
+          title: activeWidgetModal.title || newDs.displayName || newDs.name,
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menambahkan datastream.");
+    }
+  };
+
+  if (loading) return <div className="page-loading">Loading dashboards…</div>;
 
   return (
     <div className="blynk-multi-dashboard-page">
@@ -226,7 +293,7 @@ export default function DashboardContent() {
       <div className="dashboard-top-header">
         <div>
           <h1 className="page-title-bold">Dashboard</h1>
-          <p className="page-sub-text">Monitor and control IoT devices with customizable widgets!</p>
+          <p className="page-sub-text">Customize your widgets and monitor devices.</p>
         </div>
         <div className="dash-header-actions">
           <button
@@ -244,7 +311,7 @@ export default function DashboardContent() {
         </div>
       </div>
 
-      {/* Multi-Dashboard Tab Bar */}
+      {/* Tabs */}
       <div className="dashboard-tabs-bar">
         <div className="tabs-scroll-row">
           {dashboards.map((dash) => (
@@ -271,9 +338,9 @@ export default function DashboardContent() {
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="dashboard-main-container">
-        {/* Sidebar Widget Box (Hanya saat mode Edit aktif) */}
+      {/* Main Container */}
+      <div className={`dashboard-main-container ${!isEditing ? "view-mode" : ""}`}>
+        {/* Left Sidebar when Editing */}
         {isEditing && (
           <div className="widget-box-sidebar">
             <div className="widget-box-header">
@@ -288,7 +355,7 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "switch")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "switch")}
                   onClick={() => addWidgetToActiveDashboard("switch")}
                 >
                   <span className="card-item-title">Switch</span>
@@ -298,7 +365,7 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "slider")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "slider")}
                   onClick={() => addWidgetToActiveDashboard("slider")}
                 >
                   <span className="card-item-title">Slider</span>
@@ -315,7 +382,7 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "label")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "label")}
                   onClick={() => addWidgetToActiveDashboard("label")}
                 >
                   <span className="card-item-title">Label</span>
@@ -329,7 +396,7 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "table")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "table")}
                   onClick={() => addWidgetToActiveDashboard("table")}
                 >
                   <span className="card-item-title">Table</span>
@@ -339,21 +406,21 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "chart")}
-                  onClick={() => addWidgetToActiveDashboard("chart")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "image")}
+                  onClick={() => addWidgetToActiveDashboard("image")}
                 >
-                  <span className="card-item-title">Data chart</span>
-                  <span className="mock-item-sub">Realtime line chart</span>
+                  <span className="card-item-title">Image</span>
+                  <span className="mock-item-sub">Photo or diagram</span>
                 </div>
 
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "image")}
-                  onClick={() => addWidgetToActiveDashboard("image")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "chart")}
+                  onClick={() => addWidgetToActiveDashboard("chart")}
                 >
-                  <span className="card-item-title">Image</span>
-                  <span className="mock-item-sub">Photo or diagram</span>
+                  <span className="card-item-title">Data chart</span>
+                  <span className="mock-item-sub">Realtime line chart</span>
                 </div>
               </div>
 
@@ -363,7 +430,7 @@ export default function DashboardContent() {
                 <div
                   className="widget-draggable-card"
                   draggable
-                  onDragStart={(e) => handleDragStart(e, "video")}
+                  onDragStart={(e) => handlePaletteDragStart(e, "video")}
                   onClick={() => addWidgetToActiveDashboard("video")}
                 >
                   <span className="card-item-title">Live video</span>
@@ -374,40 +441,51 @@ export default function DashboardContent() {
           </div>
         )}
 
-        {/* Canvas Dashboard Area */}
+        {/* Canvas Area */}
         <div
-          className={`widget-canvas-dropzone ${isEditing ? "editing-mode" : "view-mode"}`}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
+          className={`widget-canvas-dropzone ${isEditing ? "editing-mode" : ""}`}
+          onDrop={handleCanvasDrop}
+          onDragOver={(e) => e.preventDefault()}
         >
           {(!activeDashboard?.widgets || activeDashboard.widgets.length === 0) ? (
             <div className="canvas-empty-state">
               <div className="canvas-empty-content">
-                <h3 className="empty-title">Dashboard ini masih kosong</h3>
+                <h3 className="empty-title">Add new widget</h3>
                 <p className="empty-sub">
-                  Klik <strong>✎ Edit Dashboard</strong> lalu seret widget dari Widget Box ke area ini.
+                  {isEditing
+                    ? "Drag a widget from the Widget Box to the canvas"
+                    : "Klik '✎ Edit Dashboard' untuk mulai menyusun widget."}
                 </p>
               </div>
             </div>
           ) : (
             <div className="canvas-widgets-grid">
-              {activeDashboard.widgets.map((w) => {
-                const targetDev = devices.find((d) => d.id === w.deviceId) || devices[0];
-                const ds = targetDev?.datastreams?.[w.vpin];
-                const currentVal = ds?.value !== undefined ? ds.value : w.value;
+              {activeDashboard.widgets.map((w, index) => {
+                const targetDev = devices.find((d) => d.id === w.deviceId);
+                const currentDs = (targetDev && w.vpin) ? targetDev.datastreams?.[w.vpin] : null;
+                const currentVal = currentDs?.value !== undefined ? currentDs.value : w.value;
+                const isConfigured = Boolean(targetDev && w.vpin && currentDs);
 
                 return (
                   <div
                     key={w.id}
-                    className={`canvas-widget-card col-span-${w.colSpan || 1}`}
+                    draggable={isEditing}
+                    onDragStart={(e) => handleItemDragStart(e, index)}
+                    onDragOver={(e) => handleItemDragOver(e, index)}
+                    onDragEnd={handleItemDragEnd}
+                    className={`canvas-widget-card col-span-${w.colSpan || 1} ${draggedWidgetIdx === index ? "is-dragging" : ""}`}
                   >
                     {/* Header */}
                     <div className="card-header-bar">
                       <div>
                         <span className="card-widget-title">{w.title}</span>
-                        {targetDev && (
+                        {isConfigured ? (
                           <span className="card-dev-tag">
-                            [{targetDev.name} • {w.vpin}]
+                            [{targetDev?.name} • {w.vpin}]
+                          </span>
+                        ) : (
+                          <span className="card-dev-tag not-configured" style={{ color: "#ef4444" }}>
+                            (Not Assigned)
                           </span>
                         )}
                       </div>
@@ -415,14 +493,14 @@ export default function DashboardContent() {
                         <div className="card-actions-right">
                           <button
                             className="btn-card-gear"
-                            title="Edit Device & Virtual Pin"
+                            title="Configure Device & Pin"
                             onClick={() => setActiveWidgetModal(w)}
                           >
                             ⚙️
                           </button>
                           <button
                             className="btn-card-trash"
-                            title="Remove Widget"
+                            title="Delete"
                             onClick={() => removeWidgetFromDashboard(w.id)}
                           >
                             ✕
@@ -431,129 +509,137 @@ export default function DashboardContent() {
                       )}
                     </div>
 
-                    {/* Body Widget */}
+                    {/* Content */}
                     <div className="card-widget-content">
-                      {/* SWITCH */}
-                      {w.type === "switch" && (
-                        <div className="render-switch-row">
-                          <button
-                            className={`blynk-toggle-pill ${Number(currentVal) === 1 ? "active" : ""}`}
-                            onClick={() => {
-                              const next = Number(currentVal) === 1 ? 0 : 1;
-                              handleInteract(w, next);
-                            }}
-                          >
-                            <span className="toggle-pill-thumb" />
-                          </button>
-                          <span className="toggle-status-text">
-                            {Number(currentVal) === 1 ? "On" : "Off"}
-                          </span>
+                      {!isConfigured && !isEditing ? (
+                        <div style={{ color: "#9ca3af", fontSize: 12, padding: "12px 0", textAlign: "center" }}>
+                          Widget belum terhubung ke perangkat. Edit untuk memilih datastream.
                         </div>
-                      )}
+                      ) : (
+                        <>
+                          {/* SWITCH */}
+                          {w.type === "switch" && (
+                            <div className="render-switch-row">
+                              <button
+                                className={`blynk-toggle-pill ${Number(currentVal) === 1 ? "active" : ""}`}
+                                onClick={() => {
+                                  const next = Number(currentVal) === 1 ? 0 : 1;
+                                  handleInteract(w, next);
+                                }}
+                              >
+                                <span className="toggle-pill-thumb" />
+                              </button>
+                              <span className="toggle-status-text">
+                                {Number(currentVal) === 1 ? "On" : "Off"}
+                              </span>
+                            </div>
+                          )}
 
-                      {/* SLIDER */}
-                      {w.type === "slider" && (
-                        <div className="render-slider-row">
-                          <input
-                            type="range"
-                            min={w.min ?? 0}
-                            max={w.max ?? 100}
-                            value={Number(currentVal) || 0}
-                            className="blynk-slider-element"
-                            onChange={(e) => handleInteract(w, Number(e.target.value))}
-                          />
-                          <span className="slider-value-display">{currentVal}</span>
-                        </div>
-                      )}
+                          {/* SLIDER */}
+                          {w.type === "slider" && (
+                            <div className="render-slider-row">
+                              <input
+                                type="range"
+                                min={currentDs?.min ?? w.min ?? 0}
+                                max={currentDs?.max ?? w.max ?? 100}
+                                value={Number(currentVal) || 0}
+                                className="blynk-slider-element"
+                                onChange={(e) => handleInteract(w, Number(e.target.value))}
+                              />
+                              <span className="slider-value-display">{currentVal ?? 0}</span>
+                            </div>
+                          )}
 
-                      {/* LABEL */}
-                      {w.type === "label" && (
-                        <div className="render-label-row">
-                          <span className="label-large-text">
-                            {currentVal}{w.unit || "°C"}
-                          </span>
-                        </div>
-                      )}
+                          {/* LABEL */}
+                          {w.type === "label" && (
+                            <div className="render-label-row">
+                              <span className="label-large-text">
+                                {currentVal ?? "--"} {currentDs?.unit || w.unit || ""}
+                              </span>
+                            </div>
+                          )}
 
-                      {/* CHART */}
-                      {w.type === "chart" && (
-                        <div className="render-chart-block">
-                          <svg className="blynk-chart-svg" viewBox="0 0 500 120" preserveAspectRatio="none">
-                            <defs>
-                              <linearGradient id={`dashGrad_${w.id}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#0070f3" stopOpacity="0.25" />
-                                <stop offset="100%" stopColor="#0070f3" stopOpacity="0.0" />
-                              </linearGradient>
-                            </defs>
-                            <path
-                              d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45 L500,120 L0,120 Z"
-                              fill={`url(#dashGrad_${w.id})`}
-                            />
-                            <path
-                              d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45"
-                              fill="none"
-                              stroke="#0070f3"
-                              strokeWidth="2.5"
-                            />
-                          </svg>
-                        </div>
-                      )}
+                          {/* CHART */}
+                          {w.type === "chart" && (
+                            <div className="render-chart-block">
+                              <svg className="blynk-chart-svg" viewBox="0 0 500 120" preserveAspectRatio="none">
+                                <defs>
+                                  <linearGradient id={`dashG_${w.id}`} x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%" stopColor="#0070f3" stopOpacity="0.25" />
+                                    <stop offset="100%" stopColor="#0070f3" stopOpacity="0.0" />
+                                  </linearGradient>
+                                </defs>
+                                <path
+                                  d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45 L500,120 L0,120 Z"
+                                  fill={`url(#dashG_${w.id})`}
+                                />
+                                <path
+                                  d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45"
+                                  fill="none"
+                                  stroke="#0070f3"
+                                  strokeWidth="2.5"
+                                />
+                              </svg>
+                            </div>
+                          )}
 
-                      {/* IMAGE */}
-                      {w.type === "image" && (
-                        <div className="render-image-block">
-                          <div className="image-mock-esp32">
-                            <span className="dot-pin p-tl" />
-                            <span className="dot-pin p-tr" />
-                            <span className="dot-pin p-bl" />
-                            <span className="dot-pin p-br" />
-                            <div className="esp-chip-core">{targetDev?.type || "ESP32"}</div>
-                          </div>
-                        </div>
-                      )}
+                          {/* IMAGE */}
+                          {w.type === "image" && (
+                            <div className="render-image-block">
+                              <div className="image-mock-esp32">
+                                <span className="dot-pin p-tl" />
+                                <span className="dot-pin p-tr" />
+                                <span className="dot-pin p-bl" />
+                                <span className="dot-pin p-br" />
+                                <div className="esp-chip-core">{targetDev?.type || "ESP32"}</div>
+                              </div>
+                            </div>
+                          )}
 
-                      {/* TABLE */}
-                      {w.type === "table" && (
-                        <div className="render-table-block">
-                          <table className="blynk-data-table">
-                            <thead>
-                              <tr>
-                                <th>Time</th>
-                                <th>Sensor</th>
-                                <th>Value</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              <tr>
-                                <td>12:41:08</td>
-                                <td>Temperature</td>
-                                <td>{targetDev?.datastreams?.V3?.value ?? 27.4}</td>
-                              </tr>
-                              <tr>
-                                <td>12:41:06</td>
-                                <td>Humidity</td>
-                                <td>{targetDev?.datastreams?.V1?.value ?? 63.1}</td>
-                              </tr>
-                              <tr>
-                                <td>12:41:04</td>
-                                <td>Light</td>
-                                <td>{targetDev?.datastreams?.V5?.value ?? 412.0}</td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
+                          {/* TABLE */}
+                          {w.type === "table" && (
+                            <div className="render-table-block">
+                              <table className="blynk-data-table">
+                                <thead>
+                                  <tr>
+                                    <th>Time</th>
+                                    <th>Sensor</th>
+                                    <th>Value</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  <tr>
+                                    <td>12:41:08</td>
+                                    <td>Temperature</td>
+                                    <td>{targetDev?.datastreams?.V3?.value ?? "27.4"}</td>
+                                  </tr>
+                                  <tr>
+                                    <td>12:41:06</td>
+                                    <td>Humidity</td>
+                                    <td>{targetDev?.datastreams?.V1?.value ?? "63.1"}</td>
+                                  </tr>
+                                  <tr>
+                                    <td>12:41:04</td>
+                                    <td>Light</td>
+                                    <td>{targetDev?.datastreams?.V5?.value ?? "412.0"}</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
 
-                      {/* VIDEO */}
-                      {w.type === "video" && (
-                        <div className="render-video-block">
-                          <div className="video-camera-screen">
-                            <div className="camera-live-badge">LIVE</div>
-                            <div className="camera-glitch-box b1" />
-                            <div className="camera-glitch-box b2" />
-                            <div className="camera-footer-info">CAM-01 LIVE</div>
-                          </div>
-                        </div>
+                          {/* VIDEO */}
+                          {w.type === "video" && (
+                            <div className="render-video-block">
+                              <div className="video-camera-screen">
+                                <div className="camera-live-badge">LIVE</div>
+                                <div className="camera-glitch-box b1" />
+                                <div className="camera-glitch-box b2" />
+                                <div className="camera-footer-info">CAM-01 LIVE</div>
+                              </div>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -577,7 +663,7 @@ export default function DashboardContent() {
                 <label>Dashboard Name</label>
                 <input
                   type="text"
-                  placeholder="e.g. Greenhouse Room 1"
+                  placeholder="e.g. Living Room, Farm A"
                   value={newDashName}
                   onChange={(e) => setNewDashName(e.target.value)}
                   autoFocus
@@ -600,15 +686,15 @@ export default function DashboardContent() {
         </div>
       )}
 
-      {/* ── MODAL: CONFIGURE DASHBOARD WIDGET PIN & DEVICE ── */}
+      {/* ── MODAL: WIDGET SETTINGS ── */}
       {activeWidgetModal && (
-        <ConfigureDashboardWidgetModal
+        <WidgetSettingsModal
           widget={activeWidgetModal}
           devices={devices}
           onClose={() => setActiveWidgetModal(null)}
           onSave={async (updated) => {
             if (!user || !activeDashboard) return;
-            const updatedWidgets = activeDashboard.widgets.map((w) =>
+            const updatedWidgets = (activeDashboard.widgets || []).map((w) =>
               w.id === updated.id ? updated : w
             );
             await update(ref(rtdb, `users/${user.uid}/dashboards/${activeDashboard.id}`), {
@@ -616,126 +702,26 @@ export default function DashboardContent() {
             });
             setActiveWidgetModal(null);
           }}
+          onCreateDatastream={(devId) => {
+            setTargetDeviceForDs(devId);
+            setShowNewDsModal(true);
+          }}
         />
       )}
-    </div>
-  );
-}
 
-// ── MODAL KONFIGURASI DEVICE & VIRTUAL PIN DASHBOARD ──
-function ConfigureDashboardWidgetModal({
-  widget,
-  devices,
-  onClose,
-  onSave,
-}: {
-  widget: DashboardWidget;
-  devices: DeviceItem[];
-  onClose: () => void;
-  onSave: (updated: DashboardWidget) => void;
-}) {
-  const [selectedDevId, setSelectedDevId] = useState(widget.deviceId || devices[0]?.id || "");
-  const [selectedVpin, setSelectedVpin] = useState(widget.vpin || "V1");
-  const [widgetTitle, setWidgetTitle] = useState(widget.title);
-  const [colSpan, setColSpan] = useState(widget.colSpan || 1);
-
-  const targetDev = devices.find((d) => d.id === selectedDevId) || devices[0];
-  const ds = targetDev?.datastreams || {};
-
-  return (
-    <div className="modal-backdrop-blur" onClick={onClose}>
-      <div className="datastream-modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="ds-modal-top">
-          <h2 className="ds-modal-title">Configure Widget</h2>
-        </div>
-
-        <div className="ds-tab-body">
-          <div className="ds-field-section">
-            <label className="ds-input-label">Widget Title</label>
-            <input
-              type="text"
-              className="ds-text-input"
-              value={widgetTitle}
-              onChange={(e) => setWidgetTitle(e.target.value)}
-            />
-          </div>
-
-          <div className="ds-field-section" style={{ marginTop: 14 }}>
-            <label className="ds-input-label">Select Target Device</label>
-            <select
-              className="ds-text-input"
-              value={selectedDevId}
-              onChange={(e) => {
-                setSelectedDevId(e.target.value);
-              }}
-            >
-              {devices.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name} ({d.type}) — {d.status}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="ds-field-section" style={{ marginTop: 14 }}>
-            <label className="ds-input-label">Target Virtual Pin</label>
-            <select
-              className="ds-text-input"
-              value={selectedVpin}
-              onChange={(e) => setSelectedVpin(e.target.value)}
-            >
-              {Object.keys(ds).length > 0 ? (
-                Object.entries(ds).map(([pin, item]) => (
-                  <option key={pin} value={pin}>
-                    {pin} — {item.name} ({item.type} [{item.min}-{item.max}])
-                  </option>
-                ))
-              ) : (
-                <>
-                  <option value="V0">V0 — Sensor 1</option>
-                  <option value="V1">V1 — Sensor 2</option>
-                  <option value="V2">V2 — Actuator / Relay</option>
-                  <option value="V3">V3 — Temperature</option>
-                  <option value="V4">V4 — Fan PWM</option>
-                </>
-              )}
-            </select>
-          </div>
-
-          <div className="ds-field-section" style={{ marginTop: 14 }}>
-            <label className="ds-input-label">Grid Width (Columns)</label>
-            <select
-              value={colSpan}
-              onChange={(e) => setColSpan(Number(e.target.value))}
-              className="ds-text-input"
-            >
-              <option value={1}>1 Column (Standard)</option>
-              <option value={2}>2 Columns (Wide)</option>
-              <option value={3}>3 Columns (Full Width)</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="ds-modal-footer">
-          <button className="ds-btn-cancel" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="ds-btn-save-lime"
-            onClick={() => {
-              onSave({
-                ...widget,
-                title: widgetTitle,
-                deviceId: selectedDevId,
-                vpin: selectedVpin,
-                colSpan,
-              });
-            }}
-          >
-            Save
-          </button>
-        </div>
-      </div>
+      {/* ── MODAL: NEW DATASTREAM ── */}
+      {showNewDsModal && (
+        <NewDatastreamModal
+          existingPins={
+            devices.find((d) => d.id === targetDeviceForDs)?.datastreams
+              ? Object.keys(devices.find((d) => d.id === targetDeviceForDs)!.datastreams!)
+              : []
+          }
+          initialPin="V0"
+          onClose={() => setShowNewDsModal(false)}
+          onSave={handleSaveNewDatastream}
+        />
+      )}
     </div>
   );
 }
