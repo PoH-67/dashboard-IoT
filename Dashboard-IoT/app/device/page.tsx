@@ -1,7 +1,6 @@
 import AppShell from "@/components/AppShell";
+import DeviceContent from "@/components/DeviceContent";
 
 export default function DevicePage() {
- return(
-    <AppShell>
-    </AppShell>);
+  return <AppShell><DeviceContent /></AppShell>;
 }
