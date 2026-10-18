@@ -155,7 +155,7 @@ export default function AppShell({ children }: { children?: ReactNode }) {
             <span className="shell-search-icon"><IconSearch /></span>
             <input
               type="text"
-              placeholder="Search Dashboard"
+              placeholder={`Search ${activeKey(pathname).charAt(0).toUpperCase() + activeKey(pathname).slice(1)}`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="shell-search-input"
