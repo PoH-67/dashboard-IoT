@@ -1,17 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-
-const TEAM = [
-  { name: "Khalil Farel Fauzan",          role: "Head of Software Division",  img: "/team/Software_Ketua.webp" },
-  { name: "Ramadhani Putra Yuditama",     role: "Staff of Software Division", img: "/team/Software_Staff_1.webp" },
-  { name: "Abdurrahman Al Ghilari",       role: "Staff of Software Division", img: "/team/Software_Staff_2.webp" },
-  { name: "Fahri Pratama",                role: "Staff of Software Division", img: "/team/Software_Staff_3.webp" },
-  { name: "Kaka Ramadhan",               role: "Staff of Software Division", img: "/team/Software_Staff_4.webp" },
-  { name: "Maleakhi Adriel Anindya D.S.", role: "Head of UI/UX Division",    img: "/team/UiUx_Ketua.webp" },
-  { name: "Sion Lukas Elkana Panjaitan",  role: "Staff of UI/UX Division",   img: "/team/UiUx_Staff_1.webp" },
-  { name: "Nasya Kalia Shalemina",        role: "Staff of UI/UX Division",   img: "/team/UiUx_Staff_2.webp" },
-];
+import TeamGallery from "./TeamGallery";
 
 export default function LandingPage() {
   const router = useRouter();
@@ -67,27 +57,7 @@ export default function LandingPage() {
       </section>
 
       {/* ────── TEAM ────── */}
-      <section className="lp-team">
-        <h2 className="lp-team-title">OUR TEAM</h2>
-        <div className="lp-team-grid">
-          {TEAM.map((member) => (
-            <div key={member.name} className="lp-card">
-              <img
-                src={member.img}
-                alt={member.name}
-                className="lp-card-img"
-                onError={(e) => {
-                  (e.currentTarget as HTMLImageElement).src = "/logo-placeholder.svg";
-                }}
-              />
-              <div className="lp-card-overlay">
-                <span className="lp-card-name">{member.name}</span>
-                <span className="lp-card-role">{member.role}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      <TeamGallery />
 
       {/* ────── FOOTER ────── */}
       <footer className="lp-footer">
