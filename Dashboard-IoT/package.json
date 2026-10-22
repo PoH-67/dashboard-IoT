@@ -11,16 +11,12 @@
     "firebase": "latest",
     "next": "latest",
     "react": "latest",
-    "react-dom": "latest",
-    "swiper": "^14.3.0"
+    "react-dom": "latest"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "postcss": "^8.5.31",
-    "tailwindcss": "^4.3.3",
     "typescript": "latest"
   }
 }
