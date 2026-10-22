@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Datastream, DATASTREAM_SUGGESTIONS, AVAILABLE_VIRTUAL_PINS } from "@/lib/iot-types";
+import UnitSelect from "@/components/UnitSelect";
 
 interface Props {
   existingPins?: string[];
@@ -306,22 +307,17 @@ export default function NewDatastreamModal({ existingPins = [], initialPin = "V0
 
                 <div className="blynk-input-field">
                   <label>SEMANTIC CLASSIFICATION</label>
-                  <select
+                  <UnitSelect
                     value={semanticTag}
-                    onChange={(e) => setSemanticTag(e.target.value)}
-                  >
-                    <option value="None">None</option>
-                    <option value="Temperature">Temperature (°C, °F, K)</option>
-                    <option value="Humidity">Humidity (%)</option>
-                    <option value="Pressure">Pressure (hPa, bar)</option>
-                    <option value="Voltage">Voltage (V, mV)</option>
-                    <option value="Current">Current (A, mA)</option>
-                    <option value="Power">Power (W, kW)</option>
-                    <option value="Battery Level">Battery Level (%)</option>
-                    <option value="Relay / State">State Control (0/1)</option>
-                    <option value="Distance">Distance / Proximity (cm, m)</option>
-                    <option value="Light">Illuminance (Lux)</option>
-                  </select>
+                    onChange={(u) => {
+                      setSemanticTag(u ? u.name : "None");
+                      // Keep the Units tab in sync with the chosen unit symbol
+                      setUnit(u ? u.symbol : "");
+                    }}
+                  />
+                  <span className="blynk-field-hint">
+                    Search or pick a unit. The unit symbol is also applied to the Units tab.
+                  </span>
                 </div>
               </div>
             )}

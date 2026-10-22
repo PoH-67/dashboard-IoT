@@ -1,7 +1,16 @@
 node_modules
 .next
 out
+.env
 .env.local
 .env*.local
 npm-debug.log*
 .DS_Store
+AGENTS.md
+CLAUDE.md
+.antigravity/
+claude-agent/
+.claude/
+next-env.d.ts
+tsconfig.tsbuildinfo
+*.tsbuildinfo
