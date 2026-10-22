@@ -10,3 +10,6 @@ CLAUDE.md
 .antigravity/
 claude-agent/
 .claude/
+next-env.d.ts
+tsconfig.tsbuildinfo
+*.tsbuildinfo
