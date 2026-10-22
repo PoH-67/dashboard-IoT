@@ -3,14 +3,22 @@
 import { useRouter } from "next/navigation";
 
 const TEAM = [
+  { name: "Moh Goesny Isnady",            role: "Vice Chairman",              img: "/team/Vice_Chairman.webp" },
   { name: "Khalil Farel Fauzan",          role: "Head of Software Division",  img: "/team/Software_Ketua.webp" },
   { name: "Ramadhani Putra Yuditama",     role: "Staff of Software Division", img: "/team/Software_Staff_1.webp" },
   { name: "Abdurrahman Al Ghilari",       role: "Staff of Software Division", img: "/team/Software_Staff_2.webp" },
   { name: "Fahri Pratama",                role: "Staff of Software Division", img: "/team/Software_Staff_3.webp" },
-  { name: "Kaka Ramadhan",               role: "Staff of Software Division", img: "/team/Software_Staff_4.webp" },
-  { name: "Maleakhi Adriel Anindya D.S.", role: "Head of UI/UX Division",    img: "/team/UiUx_Ketua.webp" },
-  { name: "Sion Lukas Elkana Panjaitan",  role: "Staff of UI/UX Division",   img: "/team/UiUx_Staff_1.webp" },
-  { name: "Nasya Kalia Shalemina",        role: "Staff of UI/UX Division",   img: "/team/UiUx_Staff_2.webp" },
+  { name: "Kaka Ramadhan",                role: "Staff of Software Division", img: "/team/Software_Staff_4.webp" },
+  { name: "Maleakhi Adriel Anindya D.S.", role: "Head of UI/UX Division",     img: "/team/UiUx_Ketua.webp" },
+  { name: "Sion Lukas Elkana Panjaitan",  role: "Staff of UI/UX Division",    img: "/team/UiUx_Staff_1.webp" },
+  { name: "Nasya Kalia Shalemina",        role: "Staff of UI/UX Division",    img: "/team/UiUx_Staff_2.webp" },
+  { name: "Daniel Hendriko Sirait",       role: "Head of Network Division",   img: "/team/Network_Ketua.webp" },
+  { name: "Aura Adillah",                 role: "Staff of Network Division",  img: "/team/Network_Staff_1.webp" },
+  { name: "Agrieva Hindaru R.",           role: "Staff of Network Division",  img: "/team/Network_Staff_2.webp" },
+  { name: "Ilham Surya Rizqullah",        role: "Head of Firmware Division",  img: "/team/Firmware_Ketua.webp" },
+  { name: "Muhammad Fajar Sodik",         role: "Staff of Firmware Division", img: "/team/Firmware_Staff_1.webp" },
+  { name: "Daffa Muhammad Rizki",         role: "Staff of Firmware Division", img: "/team/Firmware_Staff_2.webp" },
+  { name: "Raden Dimas Sayyidina A.",     role: "Staff of Firmware Division", img: "/team/Firmware_Staff_3.webp" },
 ];
 
 export default function LandingPage() {
