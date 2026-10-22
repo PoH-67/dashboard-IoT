@@ -242,13 +242,9 @@ export default function SignupPage() {
 
         {/* ── RIGHT: Promo Panel ── */}
         <div className="auth-right">
+          <div className="auth-right-overlay"></div>
           <div className="auth-right-content">
-            <h2 className="auth-right-title">
-              Join the<br />
-              <span>IoT Study Club.</span>
-            </h2>
             <p className="auth-right-desc">
-              Create your member account to access IoT testbeds, telemetry nodes, and developer guides.
             </p>
           </div>
           {/* decorative image slot */}
