@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { Datastream, DATASTREAM_SUGGESTIONS, AVAILABLE_VIRTUAL_PINS } from "@/lib/iot-types";
@@ -10,13 +10,23 @@ interface Props {
   onSave: (datastream: Datastream) => void;
 }
 
-export default function NewDatastreamModal({ existingPins = [], initialPin = "V0", onClose, onSave }: Props) {
+export default function NewDatastreamModal({ existingPins = [], initialPin, onClose, onSave }: Props) {
   const [activeTab, setActiveTab] = useState<"general" | "semantic" | "units">("general");
+
+  // Compute first available (unused) pin
+  const firstAvailablePin = (() => {
+    if (initialPin && !existingPins.includes(initialPin)) return initialPin;
+    for (let i = 0; i < 256; i++) {
+      const p = `V${i}`;
+      if (!existingPins.includes(p)) return p;
+    }
+    return "V0";
+  })();
 
   // General fields
   const [name, setName] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [pin, setPin] = useState(initialPin);
+  const [pin, setPin] = useState(firstAvailablePin);
   const [color, setColor] = useState("#24292e");
   const [icon, setIcon] = useState("tune");
   const [dataType, setDataType] = useState<"Integer" | "Double" | "Enum" | "String">("Integer");

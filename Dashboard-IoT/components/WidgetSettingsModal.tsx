@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { ref, remove } from "firebase/database";
+import { auth, rtdb } from "@/lib/firebase";
 import { CanvasWidget, Datastream, DeviceItem } from "@/lib/iot-types";
 
 interface Props {
@@ -11,6 +13,15 @@ interface Props {
   onSave: (updated: CanvasWidget) => void;
   onCreateDatastream: (targetDeviceId: string) => void;
 }
+
+const LEGACY_TEMPLATE_NAMES = [
+  "pembacaan pH",
+  "pembacaan kelembapan",
+  "status pompa",
+  "suhu udara",
+  "kecepatan kipas",
+  "intensitas cahaya",
+];
 
 export default function WidgetSettingsModal({
   widget,
@@ -31,11 +42,13 @@ export default function WidgetSettingsModal({
   const currentDev = device || devices?.find((d) => d.id === selectedDeviceId);
   const datastreams = currentDev?.datastreams || {};
 
+  // Check if current device has any old template datastreams
+  const hasLegacyTemplates = Object.values(datastreams).some((ds) =>
+    LEGACY_TEMPLATE_NAMES.includes(ds.name)
+  );
+
   // Title display
   const widgetTypeTitle = widget.type.charAt(0).toUpperCase() + widget.type.slice(1);
-
-  // Widget preview value
-  const previewVal = (selectedVpin && datastreams[selectedVpin]?.value) ?? (widget.type === "switch" ? 0 : 40);
 
   const handleSave = () => {
     onSave({
@@ -45,6 +58,40 @@ export default function WidgetSettingsModal({
       vpin: selectedVpin,
       colSpan,
     });
+  };
+
+  const handleDeleteDatastream = async (pinToDelete: string) => {
+    const user = auth.currentUser;
+    if (!user || !selectedDeviceId || !pinToDelete) return;
+    if (!confirm(`Hapus datastream "${pinToDelete}"?`)) return;
+    try {
+      await remove(ref(rtdb, `users/${user.uid}/devices/${selectedDeviceId}/datastreams/${pinToDelete}`));
+      if (selectedVpin === pinToDelete) {
+        setSelectedVpin("");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghapus datastream.");
+    }
+  };
+
+  const handleClearLegacyTemplates = async () => {
+    const user = auth.currentUser;
+    if (!user || !selectedDeviceId) return;
+    const legacyEntries = Object.entries(datastreams).filter(([, ds]) =>
+      LEGACY_TEMPLATE_NAMES.includes(ds.name)
+    );
+    if (legacyEntries.length === 0) return;
+    if (!confirm(`Hapus ${legacyEntries.length} datastream template bawaan (V0–V5)?`)) return;
+    try {
+      for (const [pin] of legacyEntries) {
+        await remove(ref(rtdb, `users/${user.uid}/devices/${selectedDeviceId}/datastreams/${pin}`));
+      }
+      setSelectedVpin("");
+    } catch (err) {
+      console.error(err);
+      alert("Gagal membersihkan template datastream.");
+    }
   };
 
   return (
@@ -93,7 +140,27 @@ export default function WidgetSettingsModal({
 
             {/* DATASTREAM */}
             <div className="blynk-input-field" style={{ marginTop: 16 }}>
-              <label>DATASTREAM</label>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <label>DATASTREAM</label>
+                {hasLegacyTemplates && (
+                  <button
+                    type="button"
+                    onClick={handleClearLegacyTemplates}
+                    style={{
+                      border: "none",
+                      background: "none",
+                      color: "#ef4444",
+                      fontSize: 11,
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                      padding: 0,
+                    }}
+                  >
+                    ✕ Hapus Template (V0-V5)
+                  </button>
+                )}
+              </div>
+
               <div className="blynk-ds-select-row">
                 <select
                   value={selectedVpin}
@@ -103,10 +170,29 @@ export default function WidgetSettingsModal({
                   <option value="">Select Datastream</option>
                   {Object.entries(datastreams).map(([pin, ds]) => (
                     <option key={pin} value={pin}>
-                      {pin} {ds.name} ({ds.type})
+                      {pin} {ds.displayName || ds.name} ({ds.type})
                     </option>
                   ))}
                 </select>
+
+                {selectedVpin && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteDatastream(selectedVpin)}
+                    title="Hapus Datastream Ini"
+                    style={{
+                      padding: "8px 10px",
+                      background: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      borderRadius: 6,
+                      color: "#dc2626",
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    🗑
+                  </button>
+                )}
 
                 <span className="blynk-ds-or">or</span>
 
@@ -162,7 +248,7 @@ export default function WidgetSettingsModal({
                 {/* Label Preview */}
                 {widget.type === "label" && (
                   <div className="preview-label-center">
-                    <span className="label-large-text">27.4°C</span>
+                    <span className="label-large-text">--</span>
                   </div>
                 )}
 
@@ -185,7 +271,7 @@ export default function WidgetSettingsModal({
                 {/* Image Preview */}
                 {widget.type === "image" && (
                   <div className="image-mock-esp32" style={{ height: 100 }}>
-                    <div className="esp-chip-core">ESP32</div>
+                    <div className="esp-chip-core">{currentDev?.type || "ESP32"}</div>
                   </div>
                 )}
 

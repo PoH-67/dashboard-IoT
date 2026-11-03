@@ -55,7 +55,7 @@ export default function LandingPage() {
         {/* hero content */}
         <div className="lp-hero-body">
           <h1 className="lp-headline">
-            <span className="lp-headline-accent">EMPOWERING NEXT-GEN</span>
+            <span className="lp-headline-accent">EMPOWERING</span> NEXT-GEN
             <br />
             through the internet of things
           </h1>

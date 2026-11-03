@@ -218,7 +218,7 @@ export default function SettingsPage() {
               <label>Full Name</label>
               <input
                 type="text"
-                placeholder="e.g. Lamine Yamal"
+                placeholder="Masukkan nama lengkap"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
               />
