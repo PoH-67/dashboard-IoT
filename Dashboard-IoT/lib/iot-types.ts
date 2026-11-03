@@ -1,4 +1,4 @@
-export type WidgetType = "switch" | "slider" | "label" | "table" | "image" | "chart" | "video";
+﻿export type WidgetType = "switch" | "slider" | "label" | "table" | "image" | "chart" | "video";
 
 export interface Datastream {
   pin: string; // e.g. "V0", "V1", "V2"
@@ -69,20 +69,13 @@ export const DATASTREAM_SUGGESTIONS = [
   { name: "Altitude", type: "Double", min: 0, max: 5000, unit: "m" },
   { name: "Battery Capacity", type: "Integer", min: 0, max: 100000, unit: "mA" },
   { name: "Battery Level", type: "Integer", min: 0, max: 100, unit: "%" },
-  { name: "CPU Temperature", type: "Double", min: 0, max: 100, unit: "°C" },
+  { name: "CPU Temperature", type: "Double", min: 0, max: 100, unit: "Â°C" },
 ];
 
 export const AVAILABLE_VIRTUAL_PINS = Array.from({ length: 256 }, (_, i) => `V${i}`);
 
 export function getDefaultDatastreams(): Record<string, Datastream> {
-  return {
-    V0: { pin: "V0", name: "pembacaan pH", type: "Double", min: 0, max: 14, value: 7.0 },
-    V1: { pin: "V1", name: "pembacaan kelembapan", type: "Integer", min: 0, max: 100, value: 63 },
-    V2: { pin: "V2", name: "status pompa", type: "Integer", min: 0, max: 1, value: 1 },
-    V3: { pin: "V3", name: "suhu udara", type: "Double", min: 0, max: 100, value: 27.4 },
-    V4: { pin: "V4", name: "kecepatan kipas", type: "Integer", min: 0, max: 100, value: 40 },
-    V5: { pin: "V5", name: "intensitas cahaya", type: "Integer", min: 0, max: 1023, value: 412 },
-  };
+  return {};
 }
 
 export function genAuthToken() {

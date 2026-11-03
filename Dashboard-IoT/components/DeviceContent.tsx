@@ -3,7 +3,7 @@
 import { useEffect, useState, DragEvent } from "react";
 import { onAuthStateChanged, User } from "firebase/auth";
 import {
-  ref, onValue, push, set, update, remove
+  ref, onValue, push, set, update, remove, get
 } from "firebase/database";
 import { auth, rtdb } from "@/lib/firebase";
 import {
@@ -17,20 +17,43 @@ import {
 import WidgetSettingsModal from "./WidgetSettingsModal";
 import NewDatastreamModal from "./NewDatastreamModal";
 
+const LEGACY_TEMPLATE_NAMES = [
+  "pembacaan pH",
+  "pembacaan kelembapan",
+  "status pompa",
+  "suhu udara",
+  "kecepatan kipas",
+  "intensitas cahaya",
+];
+
+const PAGE_SIZE = 10;
+
 export default function DeviceContent() {
   const [user, setUser] = useState<User | null>(null);
   const [devices, setDevices] = useState<DeviceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDevice, setSelectedDevice] = useState<DeviceItem | null>(null);
-  const [isEditingWidgets, setIsEditingWidgets] = useState(false);
 
-  // New Device Modal
+  // View mode: "list" | "detail" | "editWidgets"
+  const [viewMode, setViewMode] = useState<"list" | "detail" | "editWidgets">("list");
+
+  // New Device Modal (Gambar 2)
   const [showAddModal, setShowAddModal] = useState(false);
   const [newDevName, setNewDevName] = useState("");
-  const [newDevType, setNewDevType] = useState("ESP32");
+  const [newDevBoard, setNewDevBoard] = useState<"Arduino" | "ESP32">("Arduino");
+  const [newDevToken, setNewDevToken] = useState("");
   const [creating, setCreating] = useState(false);
 
-  // Canvas Widgets State (saat edit widget)
+  // Delete Confirmation Modal
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deviceToDelete, setDeviceToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Device Detail: token visibility & copy feedback
+  const [showToken, setShowToken] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  // Canvas Widgets State (saat edit widget mode)
   const [canvasWidgets, setCanvasWidgets] = useState<CanvasWidget[]>([]);
   const [activeWidgetForModal, setActiveWidgetForModal] = useState<CanvasWidget | null>(null);
   const [showNewDsModal, setShowNewDsModal] = useState(false);
@@ -38,8 +61,9 @@ export default function DeviceContent() {
   // Drag and drop reorder state
   const [draggedWidgetIdx, setDraggedWidgetIdx] = useState<number | null>(null);
 
-  // Search filter
+  // Search filter & Pagination (Gambar 3)
   const [searchQuery, setSearchQuery] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
 
   useEffect(() => {
     return onAuthStateChanged(auth, (u) => {
@@ -81,7 +105,7 @@ export default function DeviceContent() {
       setDevices(list);
       setLoading(false);
 
-      // Keep selected device synced if editing
+      // Keep selected device synced
       if (selectedDevice) {
         const found = list.find((d) => d.id === selectedDevice.id);
         if (found) setSelectedDevice(found);
@@ -89,52 +113,174 @@ export default function DeviceContent() {
     });
   }, [user, selectedDevice?.id]);
 
-  // Create a brand new device with EMPTY template (no default widgets, clean start)
+  // Create a brand new device (Gambar 2)
   const handleCreateDevice = async () => {
     if (!user || !newDevName.trim()) return;
     setCreating(true);
     try {
-      const token = genAuthToken();
+      const token = newDevToken.trim() || genAuthToken();
       const devRef = ref(rtdb, `users/${user.uid}/devices`);
       const newRef = push(devRef);
-      await set(newRef, {
+      const devId = newRef.key!;
+
+      const newDeviceData: Omit<DeviceItem, "id"> = {
         name: newDevName.trim(),
-        type: newDevType,
+        type: newDevBoard,
         authToken: token,
         owner: `${user.email || "user@example.com"} (you)`,
         status: "offline",
         lastSeen: null,
         createdAt: Date.now(),
-        datastreams: getDefaultDatastreams(),
-        widgets: [], // Empty initially - user creates their own layout!
-      });
+        datastreams: {}, // Bersih tanpa template dummy!
+        widgets: [],
+      };
+
+      await set(newRef, newDeviceData);
+
+      // Best effort: Save token index for ESP32 authentication verification
+      try {
+        await set(ref(rtdb, `device_tokens/${token}`), {
+          uid: user.uid,
+          deviceId: devId,
+          deviceName: newDevName.trim(),
+          createdAt: Date.now(),
+        });
+      } catch (tokenErr) {
+        console.warn("device_token sync notice:", tokenErr);
+      }
+
       setShowAddModal(false);
       setNewDevName("");
-    } catch (err) {
+      setNewDevToken("");
+      setNewDevBoard("Arduino");
+
+      // Langsung lanjutkan ke widget settings seperti di subtitle Gambar 2
+      const createdItem: DeviceItem = { id: devId, ...newDeviceData };
+      setSelectedDevice(createdItem);
+      setCanvasWidgets([]);
+      setViewMode("editWidgets");
+    } catch (err: any) {
       console.error(err);
+      alert("Gagal membuat device: " + (err?.message || "Periksa koneksi"));
     } finally {
       setCreating(false);
     }
   };
 
-  const handleDeleteDevice = async (id: string, name: string) => {
-    if (!user) return;
-    if (!confirm(`Hapus device "${name}"? Tindakan ini tidak dapat dibatalkan.`)) return;
+  // Prompt delete confirmation (modal)
+  const handlePromptDelete = (id: string, name: string) => {
+    setDeviceToDelete({ id, name });
+    setShowDeleteModal(true);
+  };
+
+  // Pastikan delete device 100% berhasil!
+  const handleConfirmDelete = async () => {
+    if (!user || !deviceToDelete) return;
+    setDeleting(true);
+    const devId = deviceToDelete.id;
+    const targetDev = devices.find((d) => d.id === devId);
+    const token = targetDev?.authToken;
+
     try {
-      await remove(ref(rtdb, `users/${user.uid}/devices/${id}`));
-      if (selectedDevice?.id === id) {
-        setIsEditingWidgets(false);
+      let clientDeleted = false;
+
+      // 1. Coba hapus via client SDK di path user (selalu authorized bagi user pemilik)
+      try {
+        await remove(ref(rtdb, `users/${user.uid}/devices/${devId}`));
+        clientDeleted = true;
+      } catch (clientErr) {
+        console.warn("Client removal error, using server API delete:", clientErr);
+      }
+
+      // 2. Fallback via server API jika rules client bermasalah
+      if (!clientDeleted) {
+        const res = await fetch("/api/device/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uid: user.uid, deviceId: devId, authToken: token }),
+        });
+        if (!res.ok) {
+          throw new Error("Gagal menghapus melalui server.");
+        }
+      }
+
+      // 3. Bersihkan token index jika diizinkan (non-blocking)
+      if (token) {
+        try {
+          await remove(ref(rtdb, `device_tokens/${token}`));
+        } catch {
+          // Ignore jika permission tidak mengizinkan write device_tokens langsung dari client
+        }
+      }
+
+      // 4. Update state lokal
+      setDevices((prev) => prev.filter((d) => d.id !== devId));
+      if (selectedDevice?.id === devId) {
+        setViewMode("list");
         setSelectedDevice(null);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("Delete error:", err);
+      alert("Gagal menghapus device: " + (err?.message || "Periksa koneksi database."));
+    } finally {
+      setDeleting(false);
+      setShowDeleteModal(false);
+      setDeviceToDelete(null);
     }
   };
 
+  // Hapus datastream tertentu
+  const handleDeleteDatastream = async (pinToDelete: string) => {
+    if (!user || !selectedDevice) return;
+    if (!confirm(`Hapus datastream pin "${pinToDelete}"?`)) return;
+    try {
+      await remove(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${pinToDelete}`));
+      const updatedDs = { ...(selectedDevice.datastreams || {}) };
+      delete updatedDs[pinToDelete];
+      setSelectedDevice({ ...selectedDevice, datastreams: updatedDs });
+    } catch (err) {
+      console.error(err);
+      alert("Gagal menghapus datastream.");
+    }
+  };
+
+  // Bersihkan semua template datastream bawaan (V0–V5)
+  const handleClearLegacyTemplates = async () => {
+    if (!user || !selectedDevice) return;
+    const currentDs = selectedDevice.datastreams || {};
+    const legacyEntries = Object.entries(currentDs).filter(([, ds]) =>
+      LEGACY_TEMPLATE_NAMES.includes(ds.name)
+    );
+    if (legacyEntries.length === 0) return;
+    if (!confirm(`Hapus ${legacyEntries.length} datastream template bawaan (V0–V5)?`)) return;
+
+    try {
+      for (const [pin] of legacyEntries) {
+        await remove(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${pin}`));
+      }
+      const updatedDs = { ...currentDs };
+      for (const [pin] of legacyEntries) {
+        delete updatedDs[pin];
+      }
+      setSelectedDevice({ ...selectedDevice, datastreams: updatedDs });
+    } catch (err) {
+      console.error(err);
+      alert("Gagal membersihkan template.");
+    }
+  };
+
+  // Navigate to device detail view (Gambar 5)
+  const handleOpenDeviceDetail = (device: DeviceItem) => {
+    setSelectedDevice(device);
+    setShowToken(false);
+    setViewMode("detail");
+  };
+
+  // Navigate to widget editor (Widget Box + Canvas)
   const handleOpenEditWidgets = (device: DeviceItem) => {
     setSelectedDevice(device);
     setCanvasWidgets(device.widgets || []);
-    setIsEditingWidgets(true);
+    setViewMode("editWidgets");
   };
 
   const handleApplyChanges = async () => {
@@ -143,10 +289,43 @@ export default function DeviceContent() {
       await update(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}`), {
         widgets: canvasWidgets,
       });
-      setIsEditingWidgets(false);
+      setViewMode("detail");
     } catch (err) {
       console.error(err);
       alert("Gagal menyimpan widget.");
+    }
+  };
+
+  // "Edit Dashboard" button logic in Gambar 5
+  const handleEditDashboard = async () => {
+    if (!user || !selectedDevice) return;
+    try {
+      const dashSnap = await get(ref(rtdb, `users/${user.uid}/dashboards`));
+      const dashData = dashSnap.val();
+      if (dashData) {
+        let matchedDashId = "";
+        for (const [dashId, val] of Object.entries<any>(dashData)) {
+          if (val?.deviceId === selectedDevice.id) {
+            matchedDashId = dashId;
+            break;
+          }
+          if (val?.widgets) {
+            const wList = Array.isArray(val.widgets) ? val.widgets : Object.values(val.widgets);
+            if (wList.some((w: any) => w?.deviceId === selectedDevice.id)) {
+              matchedDashId = dashId;
+              break;
+            }
+          }
+        }
+        if (matchedDashId) {
+          window.location.href = `/dashboard?active=${matchedDashId}`;
+          return;
+        }
+      }
+      window.location.href = `/dashboard?createFor=${selectedDevice.id}`;
+    } catch (err) {
+      console.error(err);
+      window.location.href = `/dashboard?createFor=${selectedDevice.id}`;
     }
   };
 
@@ -157,47 +336,26 @@ export default function DeviceContent() {
     let colSpan = 1;
 
     switch (type) {
-      case "switch":
-        title = "Switch";
-        colSpan = 1;
-        break;
-      case "slider":
-        title = "Slider";
-        colSpan = 1;
-        break;
-      case "label":
-        title = "Label";
-        colSpan = 1;
-        break;
-      case "chart":
-        title = "Data chart";
-        colSpan = 2;
-        break;
-      case "table":
-        title = "Table";
-        colSpan = 2;
-        break;
-      case "image":
-        title = "Image";
-        colSpan = 1;
-        break;
-      case "video":
-        title = "Live video";
-        colSpan = 1;
-        break;
+      case "switch": title = "Switch"; colSpan = 1; break;
+      case "slider": title = "Slider"; colSpan = 1; break;
+      case "label": title = "Label"; colSpan = 1; break;
+      case "chart": title = "Data chart"; colSpan = 2; break;
+      case "table": title = "Table"; colSpan = 2; break;
+      case "image": title = "Device photo"; colSpan = 1; break;
+      case "video": title = "Live video"; colSpan = 1; break;
     }
 
     const newWidget: CanvasWidget = {
       id: newId,
       type,
       title,
-      vpin: "", // Not connected yet!
+      deviceId: selectedDevice?.id,
+      vpin: "",
       colSpan,
-      value: type === "switch" ? 0 : 0,
+      value: 0,
     };
 
     setCanvasWidgets((prev) => [...prev, newWidget]);
-    // Automatically open settings so the user can configure it!
     setActiveWidgetForModal(newWidget);
   };
 
@@ -205,21 +363,16 @@ export default function DeviceContent() {
     setCanvasWidgets((prev) => prev.filter((w) => w.id !== id));
   };
 
-  // Drag from palette
   const handlePaletteDragStart = (e: DragEvent, type: WidgetType) => {
     e.dataTransfer.setData("widgetType", type);
   };
 
-  // Drop onto canvas
   const handleCanvasDrop = (e: DragEvent) => {
     e.preventDefault();
     const type = e.dataTransfer.getData("widgetType") as WidgetType;
-    if (type) {
-      addWidgetToCanvas(type);
-    }
+    if (type) addWidgetToCanvas(type);
   };
 
-  // Drag reordering inside canvas
   const handleItemDragStart = (e: DragEvent, index: number) => {
     setDraggedWidgetIdx(index);
     e.dataTransfer.effectAllowed = "move";
@@ -240,7 +393,6 @@ export default function DeviceContent() {
     setDraggedWidgetIdx(null);
   };
 
-  // Interactive control updates
   const handleWidgetValueChange = async (vpin: string, val: number | string) => {
     if (!user || !selectedDevice || !vpin) return;
     try {
@@ -252,17 +404,13 @@ export default function DeviceContent() {
     }
   };
 
-  // Saving new datastream from NewDatastreamModal
   const handleSaveNewDatastream = async (newDs: Datastream) => {
     if (!user || !selectedDevice) return;
     try {
       await update(ref(rtdb, `users/${user.uid}/devices/${selectedDevice.id}/datastreams/${newDs.pin}`), newDs);
-      
-      // Update local selectedDevice
       const updatedDs = { ...(selectedDevice.datastreams || {}), [newDs.pin]: newDs };
       setSelectedDevice({ ...selectedDevice, datastreams: updatedDs });
 
-      // If modal was open for a widget, assign this new pin
       if (activeWidgetForModal) {
         setActiveWidgetForModal({
           ...activeWidgetForModal,
@@ -277,19 +425,24 @@ export default function DeviceContent() {
     }
   };
 
+  // Filter & Pagination
   const filteredDevices = devices.filter((d) =>
     (d.name || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
     (d.authToken || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const totalPages = Math.ceil(filteredDevices.length / PAGE_SIZE) || 1;
+  const startIndex = (currentPage - 1) * PAGE_SIZE;
+  const paginatedDevices = filteredDevices.slice(startIndex, startIndex + PAGE_SIZE);
 
   if (loading) {
     return <div className="page-loading">Loading devices…</div>;
   }
 
   // ══════════════════════════════════════════════════════════
-  // VIEW: EDIT WIDGETS CANVAS (Gambar 1 & 5)
+  // VIEW 1: EDIT WIDGETS CANVAS (Widget Box & Drag-Drop)
   // ══════════════════════════════════════════════════════════
-  if (isEditingWidgets && selectedDevice) {
+  if (viewMode === "editWidgets" && selectedDevice) {
     const ds = selectedDevice.datastreams || {};
 
     return (
@@ -311,7 +464,7 @@ export default function DeviceContent() {
           <div className="action-bar-buttons">
             <button
               className="btn-editor-cancel"
-              onClick={() => setIsEditingWidgets(false)}
+              onClick={() => setViewMode("detail")}
             >
               Cancel
             </button>
@@ -326,7 +479,7 @@ export default function DeviceContent() {
 
         {/* Workspace: Sidebar + Canvas */}
         <div className="editor-workspace-layout">
-          {/* ── Left Sidebar: Widget Box (Gambar 1) ── */}
+          {/* Left Sidebar: Widget Box */}
           <div className="widget-box-sidebar">
             <div className="widget-box-header">
               <h3 className="widget-box-title">Widget Box</h3>
@@ -399,8 +552,8 @@ export default function DeviceContent() {
                   onClick={() => addWidgetToCanvas("image")}
                   title="Drag or click to add"
                 >
-                  <span className="card-item-title">Image</span>
-                  <span className="mock-item-sub">Photo or diagram</span>
+                  <span className="card-item-title">Device photo</span>
+                  <span className="mock-item-sub">Hardware diagram</span>
                 </div>
 
                 <div
@@ -426,13 +579,13 @@ export default function DeviceContent() {
                   title="Drag or click to add"
                 >
                   <span className="card-item-title">Live video</span>
-                  <span className="mock-item-sub">Device camera</span>
+                  <span className="mock-item-sub">Camera stream</span>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* ── Right Canvas: Grid Area (Gambar 2 & 5) ── */}
+          {/* Right Canvas */}
           <div
             className="widget-canvas-dropzone editing-mode"
             onDrop={handleCanvasDrop}
@@ -461,7 +614,6 @@ export default function DeviceContent() {
                       onDragEnd={handleItemDragEnd}
                       className={`canvas-widget-card col-span-${w.colSpan || 1} ${draggedWidgetIdx === index ? "is-dragging" : ""}`}
                     >
-                      {/* Card Header */}
                       <div className="card-header-bar">
                         <div>
                           <span className="card-widget-title">{w.title}</span>
@@ -491,7 +643,6 @@ export default function DeviceContent() {
                         </div>
                       </div>
 
-                      {/* Card Body */}
                       <div className="card-widget-content">
                         {/* SWITCH */}
                         {w.type === "switch" && (
@@ -538,24 +689,23 @@ export default function DeviceContent() {
                         {/* CHART */}
                         {w.type === "chart" && (
                           <div className="render-chart-block">
-                            <svg className="blynk-chart-svg" viewBox="0 0 500 120" preserveAspectRatio="none">
-                              <defs>
-                                <linearGradient id={`devGrad_${w.id}`} x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="0%" stopColor="#0070f3" stopOpacity="0.25" />
-                                  <stop offset="100%" stopColor="#0070f3" stopOpacity="0.0" />
-                                </linearGradient>
-                              </defs>
-                              <path
-                                d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45 L500,120 L0,120 Z"
-                                fill={`url(#devGrad_${w.id})`}
-                              />
-                              <path
-                                d="M0,80 Q50,70 100,60 T200,50 T300,40 T400,30 T500,45"
-                                fill="none"
-                                stroke="#0070f3"
-                                strokeWidth="2.5"
-                              />
-                            </svg>
+                            <div className="widget-chart-clean-view">
+                              <svg className="blynk-chart-svg" viewBox="0 0 500 100" preserveAspectRatio="none">
+                                <path
+                                  d="M0,70 Q100,50 200,60 T350,45 T500,55 L500,100 L0,100 Z"
+                                  fill="rgba(0,112,243,0.12)"
+                                />
+                                <path
+                                  d="M0,70 Q100,50 200,60 T350,45 T500,55"
+                                  fill="none"
+                                  stroke="#0070f3"
+                                  strokeWidth="2.5"
+                                />
+                              </svg>
+                              <div className="chart-val-footer">
+                                <span>Nilai: {currentVal ?? "--"} {currentDs?.unit || ""}</span>
+                              </div>
+                            </div>
                           </div>
                         )}
 
@@ -575,32 +725,32 @@ export default function DeviceContent() {
                         {/* TABLE */}
                         {w.type === "table" && (
                           <div className="render-table-block">
-                            <table className="blynk-data-table">
-                              <thead>
-                                <tr>
-                                  <th>Time</th>
-                                  <th>Sensor</th>
-                                  <th>Value</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                <tr>
-                                  <td>12:41:08</td>
-                                  <td>Temperature</td>
-                                  <td>{ds.V3?.value ?? "27.4"}</td>
-                                </tr>
-                                <tr>
-                                  <td>12:41:06</td>
-                                  <td>Humidity</td>
-                                  <td>{ds.V1?.value ?? "63.1"}</td>
-                                </tr>
-                                <tr>
-                                  <td>12:41:04</td>
-                                  <td>Light</td>
-                                  <td>{ds.V5?.value ?? "412.0"}</td>
-                                </tr>
-                              </tbody>
-                            </table>
+                            {Object.keys(ds).length === 0 ? (
+                              <div style={{ color: "#9ca3af", fontSize: 12, padding: "16px 0", textAlign: "center" }}>
+                                Belum ada datastream.
+                              </div>
+                            ) : (
+                              <table className="blynk-data-table">
+                                <thead>
+                                  <tr>
+                                    <th>Pin</th>
+                                    <th>Sensor</th>
+                                    <th>Value</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Object.entries(ds).map(([pin, stream]) => (
+                                    <tr key={pin}>
+                                      <td>{pin}</td>
+                                      <td>{stream.displayName || stream.name}</td>
+                                      <td>
+                                        {stream.value !== undefined ? String(stream.value) : "—"} {stream.unit || ""}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
                           </div>
                         )}
 
@@ -609,9 +759,7 @@ export default function DeviceContent() {
                           <div className="render-video-block">
                             <div className="video-camera-screen">
                               <div className="camera-live-badge">LIVE</div>
-                              <div className="camera-glitch-box b1" />
-                              <div className="camera-glitch-box b2" />
-                              <div className="camera-footer-info">CAM-01 LIVE</div>
+                              <div className="camera-footer-info">CAM-01</div>
                             </div>
                           </div>
                         )}
@@ -624,29 +772,24 @@ export default function DeviceContent() {
           </div>
         </div>
 
-        {/* ── MODAL: WIDGET SETTINGS (Gambar 3) ── */}
+        {/* MODAL: WIDGET SETTINGS */}
         {activeWidgetForModal && (
           <WidgetSettingsModal
             widget={activeWidgetForModal}
             device={selectedDevice}
             onClose={() => setActiveWidgetForModal(null)}
             onSave={(updated) => {
-              setCanvasWidgets((prev) =>
-                prev.map((w) => (w.id === updated.id ? updated : w))
-              );
+              setCanvasWidgets((prev) => prev.map((w) => (w.id === updated.id ? updated : w)));
               setActiveWidgetForModal(null);
             }}
-            onCreateDatastream={() => {
-              setShowNewDsModal(true);
-            }}
+            onCreateDatastream={() => setShowNewDsModal(true)}
           />
         )}
 
-        {/* ── MODAL: NEW DATASTREAM (Gambar 4 & 5) ── */}
+        {/* MODAL: NEW DATASTREAM */}
         {showNewDsModal && (
           <NewDatastreamModal
             existingPins={Object.keys(ds)}
-            initialPin="V0"
             onClose={() => setShowNewDsModal(false)}
             onSave={handleSaveNewDatastream}
           />
@@ -656,14 +799,349 @@ export default function DeviceContent() {
   }
 
   // ══════════════════════════════════════════════════════════
-  // VIEW: DEVICE LIST (Gambar 3)
+  // VIEW 2: DEVICE DETAIL (Gambar 5 - Read View)
+  // ══════════════════════════════════════════════════════════
+  if (viewMode === "detail" && selectedDevice) {
+    const ds = selectedDevice.datastreams || {};
+    const widgets = selectedDevice.widgets || [];
+    const hasLegacy = Object.values(ds).some((item) => LEGACY_TEMPLATE_NAMES.includes(item.name));
+
+    return (
+      <div className="dev-detail-page-container">
+        {/* Top Breadcrumb with Back Arrow (Gambar 5) */}
+        <div className="dev-detail-breadcrumb-bar">
+          <button
+            className="btn-detail-back-arrow"
+            onClick={() => {
+              setViewMode("list");
+              setSelectedDevice(null);
+            }}
+            title="Kembali ke Device List"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="back-arrow-svg">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div className="dev-breadcrumb-path">
+            <span
+              className="crumb-link"
+              onClick={() => {
+                setViewMode("list");
+                setSelectedDevice(null);
+              }}
+            >
+              Device
+            </span>
+            <span className="crumb-slash"> / </span>
+            <span className="crumb-active">{selectedDevice.name}</span>
+          </div>
+        </div>
+
+        {/* Device Information Card (Gambar 5) */}
+        <div className="dev-detail-card-box">
+          <div className="dev-card-left-group">
+            {/* Chip Avatar Icon */}
+            <div className="dev-chip-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="#0070f3" strokeWidth="2" className="dev-chip-icon-svg">
+                <rect x="5" y="5" width="14" height="14" rx="2" />
+                <path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3" />
+              </svg>
+            </div>
+
+            {/* Info Texts */}
+            <div className="dev-info-texts">
+              <div className="dev-title-status-row">
+                <h1 className="dev-name-heading">{selectedDevice.name}</h1>
+                <span className={`dev-status-badge ${selectedDevice.status}`}>
+                  • {selectedDevice.status === "online" ? "Online" : "Offline"}
+                </span>
+              </div>
+
+              <div className="dev-meta-line">
+                <span className="meta-text">
+                  Owner <strong>{selectedDevice.owner || user?.email || "member@upnvj.ac.id (you)"}</strong>
+                </span>
+                <span className="meta-sep" />
+                <span className="meta-text">
+                  Board <strong>{selectedDevice.type || "ESP32"}</strong>
+                </span>
+              </div>
+
+              {/* AuthToken row with eye toggle & copy */}
+              <div className="dev-auth-token-row">
+                <span className="auth-token-label">AuthToken:</span>
+                <span className="auth-token-val">
+                  {showToken
+                    ? selectedDevice.authToken
+                    : `${selectedDevice.authToken ? selectedDevice.authToken.slice(0, 8) : "GoE5-mYy"} •••••`}
+                </span>
+
+                <button
+                  className="btn-auth-eye"
+                  onClick={() => setShowToken(!showToken)}
+                  title={showToken ? "Sembunyikan AuthToken" : "Lihat AuthToken"}
+                >
+                  {showToken ? (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="eye-svg">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M1 1l22 22" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="eye-svg">
+                      <path d="M1 12S5 4 12 4s11 8 11 8-4 8-11 8S1 12 1 12z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+
+                <button
+                  className="btn-auth-copy"
+                  onClick={() => {
+                    navigator.clipboard.writeText(selectedDevice.authToken || "");
+                    setCopiedToken(true);
+                    setTimeout(() => setCopiedToken(false), 2000);
+                  }}
+                  title="Salin AuthToken untuk Arduino IDE"
+                >
+                  {copiedToken ? "✓ Copied" : "Copy"}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Action Buttons: Widget Settings & Edit Dashboard (Gambar 5) */}
+          <div className="dev-card-right-actions">
+            <button
+              className="btn-widget-settings-pill"
+              onClick={() => handleOpenEditWidgets(selectedDevice)}
+            >
+              Widget Settings
+            </button>
+            <button
+              className="btn-edit-dashboard-pill"
+              onClick={handleEditDashboard}
+            >
+              Edit Dashboard
+            </button>
+          </div>
+        </div>
+
+        {/* Datastreams Quick-Manage Section */}
+        {hasLegacy && (
+          <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 10, padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, color: "#9a3412" }}>
+              Perangkat ini memiliki datastream template bawaan lama (V0-V5). Ingin menghapusnya agar bersih?
+            </span>
+            <button
+              type="button"
+              onClick={handleClearLegacyTemplates}
+              style={{
+                background: "#ea580c",
+                color: "#fff",
+                border: "none",
+                borderRadius: 6,
+                padding: "6px 14px",
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              ✕ Hapus Template V0-V5
+            </button>
+          </div>
+        )}
+
+        {/* Widgets Grid View (Gambar 5) */}
+        <div className="dev-detail-widgets-area">
+          {widgets.length === 0 ? (
+            <div className="canvas-empty-state" style={{ minHeight: 200 }}>
+              <div className="canvas-empty-content">
+                <h3 className="empty-title">Belum ada widget pada device ini</h3>
+                <p className="empty-sub">
+                  Klik tombol <strong>Widget Settings</strong> di atas untuk menambahkan kontrol, gauge, chart, dan indikator.
+                </p>
+                <button
+                  className="btn-dash-new-primary"
+                  onClick={() => handleOpenEditWidgets(selectedDevice)}
+                  style={{ marginTop: 14 }}
+                >
+                  + Tambah Widget Sekarang
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="canvas-widgets-grid">
+              {widgets.map((w) => {
+                const currentDs = w.vpin ? ds[w.vpin] : null;
+                const currentVal = currentDs?.value !== undefined ? currentDs.value : w.value;
+
+                return (
+                  <div key={w.id} className={`canvas-widget-card col-span-${w.colSpan || 1}`}>
+                    <div className="card-header-bar">
+                      <div>
+                        <span className="card-widget-title">{w.title}</span>
+                        {w.vpin && currentDs && (
+                          <span className="card-dev-tag">[{w.vpin}]</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="card-widget-content">
+                      {/* SWITCH */}
+                      {w.type === "switch" && (
+                        <div className="render-switch-row">
+                          <button
+                            className={`blynk-toggle-pill ${Number(currentVal) === 1 ? "active" : ""}`}
+                            onClick={() => {
+                              const next = Number(currentVal) === 1 ? 0 : 1;
+                              handleWidgetValueChange(w.vpin!, next);
+                            }}
+                          >
+                            <span className="toggle-pill-thumb" />
+                          </button>
+                          <span className="toggle-status-text">
+                            {Number(currentVal) === 1 ? "On" : "Off"}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* SLIDER */}
+                      {w.type === "slider" && (
+                        <div className="render-slider-row">
+                          <input
+                            type="range"
+                            min={currentDs?.min ?? w.min ?? 0}
+                            max={currentDs?.max ?? w.max ?? 100}
+                            value={Number(currentVal) || 0}
+                            className="blynk-slider-element"
+                            onChange={(e) => handleWidgetValueChange(w.vpin!, Number(e.target.value))}
+                          />
+                          <span className="slider-value-display">{currentVal ?? 0}</span>
+                        </div>
+                      )}
+
+                      {/* LABEL */}
+                      {w.type === "label" && (
+                        <div className="render-label-row">
+                          <span className="label-large-text">
+                            {currentVal ?? "--"} {currentDs?.unit || w.unit || ""}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* CHART */}
+                      {w.type === "chart" && (
+                        <div className="render-chart-block">
+                          <div className="widget-chart-clean-view">
+                            <svg className="blynk-chart-svg" viewBox="0 0 500 100" preserveAspectRatio="none">
+                              <path
+                                d="M0,70 Q100,50 200,60 T350,45 T500,55 L500,100 L0,100 Z"
+                                fill="rgba(0,112,243,0.12)"
+                              />
+                              <path
+                                d="M0,70 Q100,50 200,60 T350,45 T500,55"
+                                fill="none"
+                                stroke="#0070f3"
+                                strokeWidth="2.5"
+                              />
+                            </svg>
+                            <div className="chart-val-footer">
+                              <span>Nilai: {currentVal ?? "--"} {currentDs?.unit || ""}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* IMAGE */}
+                      {w.type === "image" && (
+                        <div className="render-image-block">
+                          <div className="image-mock-esp32">
+                            <span className="dot-pin p-tl" />
+                            <span className="dot-pin p-tr" />
+                            <span className="dot-pin p-bl" />
+                            <span className="dot-pin p-br" />
+                            <div className="esp-chip-core">{selectedDevice.type || "ESP32"}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* TABLE */}
+                      {w.type === "table" && (
+                        <div className="render-table-block">
+                          {Object.keys(ds).length === 0 ? (
+                            <div style={{ color: "#9ca3af", fontSize: 12, padding: "16px 0", textAlign: "center" }}>
+                              Belum ada datastream pada device ini.
+                            </div>
+                          ) : (
+                            <table className="blynk-data-table">
+                              <thead>
+                                <tr>
+                                  <th>Pin</th>
+                                  <th>Sensor</th>
+                                  <th>Value</th>
+                                  <th style={{ width: 40 }}>Aksi</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Object.entries(ds).map(([pin, stream]) => (
+                                  <tr key={pin}>
+                                    <td>{pin}</td>
+                                    <td>{stream.displayName || stream.name}</td>
+                                    <td>
+                                      {stream.value !== undefined ? String(stream.value) : "—"} {stream.unit || ""}
+                                    </td>
+                                    <td>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteDatastream(pin)}
+                                        title="Hapus pin ini"
+                                        style={{
+                                          background: "transparent",
+                                          border: "none",
+                                          color: "#ef4444",
+                                          cursor: "pointer",
+                                          padding: 2,
+                                        }}
+                                      >
+                                        🗑
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      )}
+
+                      {/* VIDEO */}
+                      {w.type === "video" && (
+                        <div className="render-video-block">
+                          <div className="video-camera-screen">
+                            <div className="camera-live-badge">LIVE</div>
+                            <div className="camera-footer-info">CAM-01</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // VIEW 3: DEVICE LIST (Gambar 3 & 4)
   // ══════════════════════════════════════════════════════════
   return (
     <div className="blynk-device-list-page">
       {/* Header */}
       <div className="page-header-simple">
         <h1 className="page-title-bold">Device</h1>
-        <p className="page-sub-text">Guidances you might need!</p>
+        <p className="page-sub-text">Your devices, your control</p>
       </div>
 
       {/* Table Section Header */}
@@ -671,13 +1149,18 @@ export default function DeviceContent() {
         <h2 className="device-list-heading">Device List</h2>
         <button
           className="btn-new-device-blue"
-          onClick={() => setShowAddModal(true)}
+          onClick={() => {
+            setNewDevName("");
+            setNewDevBoard("Arduino");
+            setNewDevToken(genAuthToken());
+            setShowAddModal(true);
+          }}
         >
           <span className="plus-icon">⊕</span> New Device
         </button>
       </div>
 
-      {/* Devices Table */}
+      {/* Devices Table (Gambar 4) */}
       <div className="device-table-card">
         <table className="device-modern-table">
           <thead>
@@ -690,20 +1173,22 @@ export default function DeviceContent() {
             </tr>
           </thead>
           <tbody>
-            {filteredDevices.length === 0 ? (
+            {paginatedDevices.length === 0 ? (
               <tr>
                 <td colSpan={5} className="empty-devices-row">
-                  Belum ada device. Klik <strong>+ New Device</strong> untuk menambahkan.
+                  Belum ada device. Klik <strong>+ New Device</strong> untuk menambahkan perangkat baru.
                 </td>
               </tr>
             ) : (
-              filteredDevices.map((d) => (
-                <tr key={d.id}>
+              paginatedDevices.map((d) => (
+                <tr
+                  key={d.id}
+                  className="device-row-clickable"
+                  onClick={() => handleOpenDeviceDetail(d)}
+                  title="Klik untuk membuka detail device"
+                >
                   <td className="cell-name">
-                    <label className="checkbox-wrap">
-                      <input type="checkbox" />
-                      <span className="dev-name-text">{d.name}</span>
-                    </label>
+                    <span className="dev-name-text">{d.name}</span>
                   </td>
                   <td className="cell-token">
                     <span className="token-masked">
@@ -716,18 +1201,36 @@ export default function DeviceContent() {
                       {d.status === "online" ? "Online" : "Offline"}
                     </span>
                   </td>
-                  <td className="cell-actions">
+                  <td className="cell-actions" onClick={(e) => e.stopPropagation()}>
                     <button
-                      className="btn-action-edit"
-                      onClick={() => handleOpenEditWidgets(d)}
+                      className="btn-action-icon"
+                      title="Edit Widgets"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenEditWidgets(d);
+                      }}
                     >
-                      Edit
+                      {/* Pencil Icon */}
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="action-icon-svg">
+                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                      </svg>
                     </button>
                     <button
-                      className="btn-action-delete"
-                      onClick={() => handleDeleteDevice(d.id, d.name)}
+                      className="btn-action-icon danger"
+                      title="Delete Device"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handlePromptDelete(d.id, d.name);
+                      }}
                     >
-                      Delete
+                      {/* Trash Icon */}
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="action-icon-svg">
+                        <path
+                          fillRule="evenodd"
+                          d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
                     </button>
                   </td>
                 </tr>
@@ -735,48 +1238,187 @@ export default function DeviceContent() {
             )}
           </tbody>
         </table>
+
+        {/* ── PAGINATION BAR (Gambar 3) ── */}
+        <div className="device-table-pagination-bar">
+          <div className="pagination-info-text">
+            Showing <strong>{filteredDevices.length > 0 ? startIndex + 1 : 0}</strong> to{" "}
+            <strong>{Math.min(startIndex + PAGE_SIZE, filteredDevices.length)}</strong> of{" "}
+            <strong>{filteredDevices.length}</strong> registered devices
+          </div>
+
+          <div className="pagination-buttons-group">
+            <button
+              type="button"
+              className="btn-page-nav-pill"
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              className="btn-page-nav-pill"
+              disabled={currentPage >= totalPages || filteredDevices.length === 0}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* ── MODAL: CREATE NEW DEVICE ── */}
+      {/* ── MODAL: CREATE NEW DEVICE (Gambar 2) ── */}
       {showAddModal && (
         <div className="modal-backdrop-blur" onClick={() => setShowAddModal(false)}>
-          <div className="modal-content-card" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header-simple">
-              <h3>Create New Device</h3>
-              <button className="btn-close-modal" onClick={() => setShowAddModal(false)}>✕</button>
+          <div className="modal-content-card blynk-new-dev-modal" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="modal-header-clean">
+              <h3 className="modal-title-bold">New device</h3>
+              <p className="modal-subtitle-text">Fill in the device details, then continue to widget settings.</p>
             </div>
-            <div className="modal-body-form">
+
+            <div className="modal-body-form" style={{ marginTop: 18 }}>
+              {/* Project Name */}
               <div className="modal-input-group">
-                <label>Device Name *</label>
+                <label className="modal-label-bold">Project Name</label>
                 <input
                   type="text"
-                  placeholder="e.g. Device Hiji"
+                  placeholder="e.g. Smart Greenhouse"
                   value={newDevName}
                   onChange={(e) => setNewDevName(e.target.value)}
+                  className="modal-text-input"
                   autoFocus
                 />
               </div>
-              <div className="modal-input-group">
-                <label>Hardware Type</label>
-                <select value={newDevType} onChange={(e) => setNewDevType(e.target.value)}>
-                  <option value="ESP32">ESP32</option>
-                  <option value="ESP8266">ESP8266</option>
-                  <option value="Arduino">Arduino</option>
-                  <option value="Raspberry Pi">Raspberry Pi</option>
-                  <option value="Custom">Custom</option>
-                </select>
+
+              {/* Board: Arduino & ESP32 Only (Gambar 2) */}
+              <div className="modal-input-group" style={{ marginTop: 16 }}>
+                <label className="modal-label-bold">Board</label>
+                <div style={{ display: "flex", gap: 32, marginTop: 6 }}>
+                  <label
+                    className="device-radio-item"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setNewDevBoard("Arduino")}
+                  >
+                    <span className={`custom-radio-circle ${newDevBoard === "Arduino" ? "checked" : ""}`}>
+                      {newDevBoard === "Arduino" && <span className="custom-radio-inner" />}
+                    </span>
+                    <span className="device-radio-label">Arduino</span>
+                  </label>
+
+                  <label
+                    className="device-radio-item"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => setNewDevBoard("ESP32")}
+                  >
+                    <span className={`custom-radio-circle ${newDevBoard === "ESP32" ? "checked" : ""}`}>
+                      {newDevBoard === "ESP32" && <span className="custom-radio-inner" />}
+                    </span>
+                    <span className="device-radio-label">ESP32</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Token/Key with Generate button (Gambar 2) */}
+              <div className="modal-input-group" style={{ marginTop: 18 }}>
+                <label className="modal-label-bold">Token/Key</label>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <input
+                    type="text"
+                    placeholder="Paste the token from your device"
+                    value={newDevToken}
+                    onChange={(e) => setNewDevToken(e.target.value)}
+                    className="modal-text-input"
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="btn-token-generate"
+                    onClick={() => setNewDevToken(genAuthToken())}
+                    title="Generate token acak baru"
+                  >
+                    Generate
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Buttons: Cancel & Confirm (Gambar 2) */}
+            <div className="modal-footer-between" style={{ marginTop: 24 }}>
+              <div />
+              <div style={{ display: "flex", gap: 12 }}>
+                <button
+                  type="button"
+                  className="btn-modal-pill-cancel"
+                  onClick={() => setShowAddModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn-modal-pill-next"
+                  disabled={!newDevName.trim() || creating}
+                  onClick={handleCreateDevice}
+                >
+                  {creating ? "Creating..." : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: DELETE CONFIRMATION ── */}
+      {showDeleteModal && deviceToDelete && (
+        <div
+          className="modal-backdrop-blur"
+          onClick={() => {
+            if (!deleting) {
+              setShowDeleteModal(false);
+              setDeviceToDelete(null);
+            }
+          }}
+        >
+          <div className="modal-content-card modal-delete-confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-simple">
+              <h3>Delete Device</h3>
+              <button
+                className="btn-close-modal"
+                disabled={deleting}
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  setDeviceToDelete(null);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="modal-body-form">
+              <div className="delete-confirm-body">
+                <div className="delete-device-name">&quot;{deviceToDelete.name}&quot;</div>
+                <p className="delete-confirm-text">
+                  Apakah Anda yakin ingin menghapus perangkat ini? Semua widget dan konfigurasi terkait perangkat ini akan dihapus permanen.
+                </p>
               </div>
             </div>
             <div className="modal-footer-simple">
-              <button className="btn-modal-cancel" onClick={() => setShowAddModal(false)}>
+              <button
+                className="btn-modal-cancel"
+                disabled={deleting}
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  setDeviceToDelete(null);
+                }}
+              >
                 Cancel
               </button>
               <button
-                className="btn-modal-submit"
-                disabled={!newDevName.trim() || creating}
-                onClick={handleCreateDevice}
+                className="btn-modal-delete"
+                disabled={deleting}
+                onClick={handleConfirmDelete}
               >
-                {creating ? "Creating..." : "Create"}
+                {deleting ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>

@@ -131,7 +131,7 @@ export default function SignupPage() {
                 <label className="auth-label">Full Name <span className="auth-req">*</span></label>
                 <input
                   type="text"
-                  placeholder="Lamine Yamal"
+                  placeholder="Masukkan nama lengkap"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   autoComplete="name"
